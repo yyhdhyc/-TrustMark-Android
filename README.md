@@ -10,11 +10,11 @@
 - Kotlin 编译通过（AGP 8.7.3 / Kotlin 2.0.21 / compileSdk 35）
 - 单元测试 13 项全部通过（`PayloadCodecTest` 9 项 + `OutputNamingTest` 4 项）；`assembleDebug` 通过；`lintDebug` 0 error / 8 warning
 - `libtrustmark_jni.so` 已为 `arm64-v8a` 和 `x86_64` 交叉编译，导出 4 个 JNI 符号
-- 可安装 debug APK：`dist/TrustMarkTool-1.0.0-debug.apk`（37,213,739 字节，v2 签名，含两套 ABI 与 ORT）
-  - SHA-256：`bba32957a284076d2d977b1b8d8f1ab0411ee0120124d6acfe713979235b4d1c`
+- 可安装 debug APK：`dist/TrustMarkTool-1.1.0-debug.apk`（36,976,910 字节，v2 签名，含两套 ABI 与 ORT）
+  - SHA-256：`fb570721a55f5be9c78ea334ed670851db9e52f14a33927acf1579b2bef630c2`
 - 本次批次/映射/溯源重构后**只重新验证了 debug 构建**；`assembleRelease` 未在重构后重新执行
 - 未在物理手机上做端到端推理测试；首次启动需要联网下载模型，或按第 5.4 节离线打包
-- 版本管理：Git `main` 分支，当前发布标签 `v1.0.0`；变更记录见 [CHANGELOG.md](CHANGELOG.md)
+- 版本管理：Git `main` 分支，当前发布标签 `v1.1.0`；变更记录见 [CHANGELOG.md](CHANGELOG.md)
 - 已验证的是编译、单元测试与 APK 打包；JNI、ONNX Runtime、模型推理和相册读写仍需真机验收
 
 ---
@@ -334,12 +334,12 @@ python scripts/fetch-models.py --verify-only
 本仓库还提供了已经构建、带 JNI + ORT 的 debug APK：
 
 ```text
-dist/TrustMarkTool-1.0.0-debug.apk
+dist/TrustMarkTool-1.1.0-debug.apk
 dist/SHA256SUMS.txt
 ```
 
-当前 APK 为 37,213,739 字节，SHA-256
-`bba32957a284076d2d977b1b8d8f1ab0411ee0120124d6acfe713979235b4d1c`。
+当前 APK 为 36,976,910 字节，SHA-256
+`fb570721a55f5be9c78ea334ed670851db9e52f14a33927acf1579b2bef630c2`。
 它使用 Android debug 证书（包名 `com.trustmarktool.debug`），可直接安装测试，但不要用于正式发布。
 
 安装：

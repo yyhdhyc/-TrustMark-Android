@@ -2,9 +2,9 @@
 
 本项目遵循 [Semantic Versioning](https://semver.org/lang/zh-CN/)；版本号与 `app/build.gradle.kts` 的 `versionName` 保持一致。
 
-## v1.0.0 — 2026-10-22
+## v1.1.0 — 2026-10-22
 
-首个纳入 Git 管理的基线版本（此前开发过程未建立版本库，因此没有更早的历史提交）。
+本次将“批次 / 映射表 / 多副本 / 溯源查询”重构作为单独版本发布。
 
 ### 新增
 
@@ -28,7 +28,7 @@
 - `:app:testDebugUnitTest`：13/13 通过。
 - `:app:assembleDebug`：通过。
 - `:app:lintDebug`：0 error / 8 warning。
-- Debug APK：`dist/TrustMarkTool-1.0.0-debug.apk`，v2 签名。
+- Debug APK：`dist/TrustMarkTool-1.1.0-debug.apk`，v2 签名。
 - **未在物理设备上验证 JNI/ONNX Runtime/模型推理与相册读写。**
 
 ### 已知限制
@@ -37,3 +37,7 @@
 - 重构后未重新执行 `assembleRelease`。
 - 批次导出当前导出全部批次记录，而非仅当前选中批次。
 - 卸载应用会丢失加密映射表；需定期导出备份。
+
+## v1.0.0 — 2026-10-22
+
+首个 Git 基线。由于此前开发过程未使用 Git，`v1.0.0` 与 `v1.1.0` 的源码基线相同；从 `v1.1.0` 起单独记录版本号与交付 APK。
