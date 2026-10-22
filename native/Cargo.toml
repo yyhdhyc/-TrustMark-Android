@@ -1,0 +1,27 @@
+[workspace]
+members = ["vendor/trustmark"]
+resolver = "2"
+
+[package]
+name = "trustmark_jni"
+version = "1.0.0"
+edition = "2021"
+rust-version = "1.88.0"
+license = "MIT"
+
+[lib]
+name = "trustmark_jni"
+crate-type = ["cdylib"]
+
+[dependencies]
+jni = "0.21.1"
+image = { version = "0.25.6", default-features = false, features = ["jpeg", "png"] }
+ort = { version = "=2.0.0-rc.10", default-features = false, features = ["ndarray", "load-dynamic"] }
+trustmark = { path = "vendor/trustmark" }
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+strip = true
+panic = "unwind"

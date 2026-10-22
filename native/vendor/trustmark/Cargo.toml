@@ -1,0 +1,24 @@
+[package]
+name = "trustmark"
+description = "A Rust implementation of TrustMark (Android vendor copy)"
+version = "0.4.0"
+authors = [
+  "John Collomosse <collomos@adobe.com>",
+  "Maurice Fisher <mfisher@adobe.com>",
+  "Andrew Halle <ahalle@adobe.com>",
+  "Austin Le <ale@adobe.com>"
+]
+rust-version = "1.88.0"
+edition = "2021"
+license = "MIT"
+repository = "https://github.com/adobe/trustmark"
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+image = { version = "0.25.6", default-features = false, features = ["jpeg", "png"] }
+fast_image_resize = { version = "5.1.4", features = ["image", "rayon"] }
+ndarray = "0.16"
+ort = { version = "=2.0.0-rc.10", default-features = false, features = ["ndarray", "load-dynamic"] }
+thiserror = "1"
