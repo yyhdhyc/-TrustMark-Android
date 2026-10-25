@@ -66,7 +66,6 @@ class EncodeWorker(
 
             val total = tasks.size
             totalTasks = total
-            val strength = inputData.getFloat(WorkerKeys.STRENGTH, 0.95f).coerceIn(0.5f, 1.0f)
 
             report("准备模型", 0, total, "检查 Q 模型完整性", indeterminate = true)
             ModelRepository.ensureModels(context) { progress ->
@@ -113,7 +112,7 @@ class EncodeWorker(
                         imageBytes = inputBytes,
                         payloadBits = task.payloadBits,
                         eccWireName = task.eccWireName,
-                        strength = strength,
+                        strength = task.strength.coerceIn(0.5f, 2.0f),
                         orientation = orientation,
                     )
                     val saved = ImageStore.saveWatermarked(
@@ -122,16 +121,18 @@ class EncodeWorker(
                         bytes = outputBytes,
                         fallbackMime = task.sourceMimeType,
                     )
-                    BatchStore.addOutput(
-                        context,
-                        OutputRecord(
-                            batchId = task.batchId,
-                            sourceImage = task.sourceDisplayName,
-                            serial = task.serial,
-                            outputFileName = saved.displayName,
-                            createdAt = System.currentTimeMillis(),
-                        ),
-                    )
+                    if (task.batchId.isNotBlank()) {
+                        BatchStore.addOutput(
+                            context,
+                            OutputRecord(
+                                batchId = task.batchId,
+                                sourceImage = task.sourceDisplayName,
+                                serial = task.serial,
+                                outputFileName = saved.displayName,
+                                createdAt = System.currentTimeMillis(),
+                            ),
+                        )
+                    }
                     tasks[index] = task.copy(
                         status = GenerateTaskStatus.COMPLETED,
                         error = null,

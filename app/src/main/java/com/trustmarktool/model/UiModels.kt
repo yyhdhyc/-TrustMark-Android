@@ -31,18 +31,28 @@ data class TaskProgress(
         get() = if (total <= 0) 0f else (completed.toFloat() / total).coerceIn(0f, 1f)
 }
 
+/**
+ * Decode result. Batch fields are filled only after a CRC-valid batch frame is
+ * decoded and looked up in BatchStore. `batchName`/`recipient` stay null on a
+ * local miss (yellow state), while CRC failure is an error (red state).
+ */
 data class DecodeRecord(
     val fileName: String,
+    val frameType: String?,
     val decodedText: String?,
-    val serial: Long?,
+    val batchId: String?,
+    val serial: Int?,
+    val batchName: String?,
+    val recipient: String?,
     val payloadBits: String,
-    val format: String,
     val ecc: String?,
     val confidence: Float,
     val bitflips: Int,
     val error: String?,
 ) {
     val succeeded: Boolean get() = error == null && payloadBits.isNotEmpty()
+
+    val batchMatched: Boolean get() = recipient != null
 }
 
 data class ModelUiState(
@@ -62,16 +72,19 @@ object ModelRepositoryTotals {
     const val MODEL_BYTES = 64_713_430L
 }
 
+enum class GenerateMode {
+    UNIVERSAL,
+    BATCH,
+}
+
 data class GenerateUiState(
     val selected: List<SelectedImage> = emptyList(),
+    val mode: GenerateMode = GenerateMode.UNIVERSAL,
     val text: String = "ACME",
-    /** 通用模式：每张源图独立生成 1..N 份。 */
-    val copiesText: String = "1",
-    /** true 时份数和编号来自映射表。 */
-    val useBatch: Boolean = false,
-    val selectedBatchId: String? = null,
-    val serialWidth: SerialWidth = SerialWidth.BITS_16,
     val ecc: EccLevel = EccLevel.BCH_5,
+    /** Batch-only indestructible strength; range 0.50–2.00, default 1.30. */
+    val strength: Float = 1.3f,
+    val selectedBatchId: String? = null,
     val task: TaskProgress? = null,
     val lastSummary: String? = null,
 )
@@ -84,46 +97,10 @@ data class DecodeUiState(
     val exporting: Boolean = false,
 )
 
-enum class TraceStatus {
-    IDLE,
-    DECODING,
-    DECODE_FAILED,
-    BATCH_NOT_FOUND,
-    NO_MATCH,
-    MATCH,
-}
-
-/**
- * 三种溯源结论明确分开：
- * 1) DECODE_FAILED：payload 无法恢复；
- * 2) NO_MATCH / BATCH_NOT_FOUND：payload 恢复但本地无对应记录；
- * 3) MATCH：命中批次与接收人。
- */
-data class TraceUiState(
-    val selected: SelectedImage? = null,
-    val selectedBatchId: String? = null,
-    val status: TraceStatus = TraceStatus.IDLE,
-    val running: Boolean = false,
-    val payloadBits: String = "",
-    val decodedText: String? = null,
-    val serial: Int? = null,
-    val confidence: Float = 0f,
-    val bitflips: Int = 0,
-    val ecc: String? = null,
-    val batchIdFromFile: String? = null,
-    val batchId: String? = null,
-    val batchName: String? = null,
-    val recipient: String? = null,
-    val batchCreatedAt: Long? = null,
-    val error: String? = null,
-    val message: String? = null,
-)
-
 data class MainUiState(
     val tab: Int = 0,
     val generate: GenerateUiState = GenerateUiState(),
     val decode: DecodeUiState = DecodeUiState(),
-    val trace: TraceUiState = TraceUiState(),
     val batches: List<BatchSummary> = emptyList(),
     val model: ModelUiState = ModelUiState(),
     val message: String? = null,

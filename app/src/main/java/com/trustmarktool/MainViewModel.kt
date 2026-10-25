@@ -14,15 +14,14 @@ import androidx.work.workDataOf
 import com.trustmarktool.data.BatchStore
 import com.trustmarktool.data.DecodeStore
 import com.trustmarktool.data.ExportFormatter
-import com.trustmarktool.data.ImageOrientation
 import com.trustmarktool.data.ImageStore
 import com.trustmarktool.data.ModelRepository
 import com.trustmarktool.data.OutputNaming
 import com.trustmarktool.data.TaskPlanStore
-import com.trustmarktool.model.BatchSummary
 import com.trustmarktool.model.DecodeRecord
 import com.trustmarktool.model.DecodeUiState
 import com.trustmarktool.model.EccLevel
+import com.trustmarktool.model.GenerateMode
 import com.trustmarktool.model.GenerateTask
 import com.trustmarktool.model.GenerateUiState
 import com.trustmarktool.model.MainUiState
@@ -30,11 +29,8 @@ import com.trustmarktool.model.ModelUiState
 import com.trustmarktool.model.OutputRecord
 import com.trustmarktool.model.PayloadCodec
 import com.trustmarktool.model.SelectedImage
-import com.trustmarktool.model.SerialWidth
 import com.trustmarktool.model.TaskProgress
 import com.trustmarktool.model.TaskState
-import com.trustmarktool.model.TraceStatus
-import com.trustmarktool.model.TraceUiState
 import com.trustmarktool.nativebridge.TrustMarkEngine
 import com.trustmarktool.nativebridge.TrustMarkNative
 import com.trustmarktool.worker.DecodeWorker
@@ -44,10 +40,10 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import kotlin.math.roundToInt
 
 class MainViewModel(application: Application) : AndroidViewModel(application) {
 
@@ -65,7 +61,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     // ------------------------------------------------------------------ tabs
 
     fun selectTab(index: Int) {
-        _uiState.update { it.copy(tab = index.coerceIn(0, 2)) }
+        _uiState.update { it.copy(tab = index.coerceIn(0, 1)) }
     }
 
     fun clearMessage() {
@@ -79,8 +75,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     // --------------------------------------------------------------- generate
 
     /**
-     * 同一 URI 允许重复选择：一张源图可以生成多份副本。这里只按“源图数量”
-     * 限制 50，不做 distinctBy 去重。
+     * 同一 URI 允许重复选择：一张源图可以生成多份。去重会破坏按源图独立
+     * 编号/多副本的语义，因此这里只按源图数量限制，不做 distinctBy。
      */
     fun addGenerateImages(uris: List<Uri>) {
         if (uris.isEmpty()) return
@@ -115,37 +111,42 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         _uiState.update { it.copy(generate = it.generate.copy(selected = emptyList())) }
     }
 
+    fun setGenerateMode(mode: GenerateMode) {
+        _uiState.update { state ->
+            val firstBatch = state.batches.firstOrNull()?.batch?.batchId
+            state.copy(
+                generate = state.generate.copy(
+                    mode = mode,
+                    selectedBatchId = if (mode == GenerateMode.BATCH) {
+                        state.generate.selectedBatchId ?: firstBatch
+                    } else {
+                        state.generate.selectedBatchId
+                    },
+                    ecc = if (mode == GenerateMode.BATCH) EccLevel.BCH_SUPER else state.generate.ecc,
+                ),
+                tab = 0,
+            )
+        }
+    }
+
     fun setGenerateText(value: String) {
         _uiState.update { it.copy(generate = it.generate.copy(text = value)) }
     }
 
-    fun setCopiesText(value: String) {
-        val digits = value.filter { it.isDigit() }.take(2)
-        _uiState.update { it.copy(generate = it.generate.copy(copiesText = digits)) }
-    }
-
-    fun setSerialWidth(width: SerialWidth) {
-        _uiState.update { it.copy(generate = it.generate.copy(serialWidth = width)) }
-    }
-
     fun setEcc(ecc: EccLevel) {
-        _uiState.update { it.copy(generate = it.generate.copy(ecc = ecc)) }
+        _uiState.update { state ->
+            if (state.generate.mode == GenerateMode.BATCH) {
+                state
+            } else {
+                state.copy(generate = state.generate.copy(ecc = ecc))
+            }
+        }
     }
 
-    fun setUseBatch(enabled: Boolean) {
-        _uiState.update { state ->
-            val first = state.batches.firstOrNull()?.batch?.batchId
-            state.copy(
-                generate = state.generate.copy(
-                    useBatch = enabled,
-                    selectedBatchId = if (enabled) {
-                        state.generate.selectedBatchId ?: first
-                    } else {
-                        state.generate.selectedBatchId
-                    },
-                ),
-            )
-        }
+    /** Batch-only strength: 0.50–2.00, snapped to 0.05. */
+    fun setStrength(value: Float) {
+        val snapped = ((value.coerceIn(MIN_STRENGTH, MAX_STRENGTH) * 20f).roundToInt() / 20f)
+        _uiState.update { it.copy(generate = it.generate.copy(strength = snapped)) }
     }
 
     fun selectBatchForGenerate(batchId: String) {
@@ -153,22 +154,23 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         _uiState.update { state ->
             state.copy(
                 generate = state.generate.copy(
-                    useBatch = true,
+                    mode = GenerateMode.BATCH,
                     selectedBatchId = batchId,
-                    ecc = EccLevel.fromWireName(batch?.ecc) ?: state.generate.ecc,
+                    ecc = EccLevel.fromWireName(batch?.ecc) ?: EccLevel.BCH_SUPER,
                 ),
             )
         }
     }
 
     /**
-     * 扁平任务列表：总任务数 = Σ 每张源图份数。
-     * 编号规则：每张源图独立从 1 开始，步长固定 1。
-     * 批次模式：编号直接取映射表 serial，份数由映射表条目数决定。
+     * 扁平任务列表：
+     * - 通用模式：每张源图一条，payload = 0 + alphabet + length + text；
+     * - 批次模式：每张源图 × 映射表 serial 一条，payload = 1 + 4×5-bit code
+     *   + 12-bit serial + 7-bit CRC，固定 BCH Super。
+     * 每个任务在 Worker 中重新读取原始图片，绝不复用已编码的 Bitmap。
      */
     fun startEncode() {
-        val state = _uiState.value
-        val generate = state.generate
+        val generate = _uiState.value.generate
         if (generate.task?.running == true) return
         if (generate.selected.isEmpty()) {
             _uiState.update { it.copy(message = "请先选择至少一张图片") }
@@ -179,85 +181,91 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             return
         }
 
-        val useBatch = generate.useBatch
+        val mode = generate.mode
         val batchId = generate.selectedBatchId
-        if (useBatch && batchId.isNullOrBlank()) {
-            _uiState.update { it.copy(message = "请选择映射表批次，或关闭“使用映射表”") }
+        if (mode == GenerateMode.BATCH && batchId.isNullOrBlank()) {
+            _uiState.update { it.copy(message = "请选择一个批次，或先创建批次") }
             return
         }
 
-        val copies = if (useBatch) 0 else generate.copiesText.toIntOrNull() ?: 0
-        if (!useBatch && copies !in 1..MAX_COPIES_PER_IMAGE) {
-            _uiState.update { it.copy(message = "每张图片份数必须在 1–$MAX_COPIES_PER_IMAGE 之间") }
+        val textPlan = if (mode == GenerateMode.UNIVERSAL) {
+            PayloadCodec.planUniversal(generate.text, generate.ecc)
+        } else {
+            null
+        }
+        if (textPlan != null && !textPlan.valid) {
+            _uiState.update { it.copy(message = textPlan.error ?: "文本无法编码") }
             return
         }
-
-        val text = PayloadCodec.prepareText(generate.text)
-        if (text.isEmpty()) {
-            _uiState.update { it.copy(message = "请输入水印文本（A–Z、0–9、空格、- _ .）") }
+        if (mode == GenerateMode.BATCH && generate.strength !in MIN_STRENGTH..MAX_STRENGTH) {
+            _uiState.update { it.copy(message = "强度必须在 0.50–2.00 之间") }
             return
         }
-        val width = if (generate.serialWidth == SerialWidth.NONE) SerialWidth.BITS_16 else generate.serialWidth
-        val ecc = generate.ecc
 
         viewModelScope.launch {
             try {
                 val prepared = withContext(Dispatchers.IO) {
-                    val mapping = if (useBatch) {
-                        BatchStore.mappingsFor(application, batchId!!)
-                    } else {
-                        emptyList()
-                    }
-                    if (useBatch && mapping.isEmpty()) {
-                        error("所选批次还没有映射表条目，请先在“批次与映射”中补全接收人")
-                    }
-                    val serials = if (useBatch) {
-                        mapping.map { it.serial }.sorted()
-                    } else {
-                        (1..copies).toList()
-                    }
+                    val tasks = ArrayList<GenerateTask>()
+                    var planKey = "universal"
 
-                    // 启动前对最小/最大编号做容量预检；正式校验在 validateBatch。
-                    val firstPlan = PayloadCodec.plan(text, true, width, serials.first().toLong(), ecc)
-                    if (!firstPlan.valid) error(firstPlan.error ?: "payload 容量超限")
-                    val lastPlan = PayloadCodec.plan(text, true, width, serials.last().toLong(), ecc)
-                    if (!lastPlan.valid) error(lastPlan.error ?: "payload 容量超限")
-
-                    val batch = if (useBatch) {
-                        BatchStore.getBatch(application, batchId!!)
-                            ?: error("批次不存在：$batchId")
-                    } else {
-                        // 通用模式无批次时自动创建 G+时间戳批次（先生成后补表）。
-                        BatchStore.createGenericBatch(application, ecc.wireName)
-                    }
-
-                    val tasks = ArrayList<GenerateTask>(generate.selected.size * serials.size)
-                    generate.selected.forEach { image ->
-                        serials.forEach { serial ->
-                            val encoded = PayloadCodec.encode(
-                                text = text,
-                                autoNumber = true,
-                                serialWidth = width,
-                                serial = serial.toLong(),
-                                ecc = ecc,
-                            )
+                    if (mode == GenerateMode.UNIVERSAL) {
+                        val encoded = PayloadCodec.encodeUniversal(generate.text, generate.ecc)
+                        generate.selected.forEach { image ->
                             val extension = OutputNaming.extensionFor(image.mimeType, image.displayName)
-                            val stem = OutputNaming.buildStem(image.displayName, batch.batchId, serial)
+                            val stem = OutputNaming.buildStem(image.displayName)
                             tasks += GenerateTask(
-                                batchId = batch.batchId,
+                                batchId = "",
                                 sourceUri = image.uri.toString(),
                                 sourceDisplayName = image.displayName,
                                 sourceMimeType = image.mimeType,
-                                serial = serial,
+                                frameType = PayloadCodec.FrameType.UNIVERSAL,
+                                serial = 0,
                                 payloadBits = encoded.bits,
                                 outputStem = stem,
                                 outputFileName = "$stem.$extension",
-                                eccWireName = ecc.wireName,
+                                eccWireName = generate.ecc.wireName,
+                                strength = 1.0f,
                             )
                         }
+                    } else {
+                        val batch = BatchStore.getBatch(application, batchId!!)
+                            ?: error("批次不存在：$batchId")
+                        val mappings = BatchStore.mappingsFor(application, batch.batchId)
+                        if (mappings.isEmpty()) {
+                            error("所选批次还没有映射表条目，请先在“批次与映射”中补全接收人")
+                        }
+                        if (mappings.size > PayloadCodec.MAX_BATCH_SERIAL) {
+                            error("单个批次最多 ${PayloadCodec.MAX_BATCH_SERIAL} 个编号")
+                        }
+                        planKey = batch.batchId
+                        mappings.sortedBy { it.serial }.forEach { mapping ->
+                            val encoded = PayloadCodec.encodeBatch(
+                                batchId = batch.batchId,
+                                serial = mapping.serial,
+                                ecc = EccLevel.BCH_SUPER,
+                            )
+                            generate.selected.forEach { image ->
+                                val extension = OutputNaming.extensionFor(image.mimeType, image.displayName)
+                                val stem = OutputNaming.buildStem(image.displayName)
+                                tasks += GenerateTask(
+                                    batchId = batch.batchId,
+                                    sourceUri = image.uri.toString(),
+                                    sourceDisplayName = image.displayName,
+                                    sourceMimeType = image.mimeType,
+                                    frameType = PayloadCodec.FrameType.BATCH,
+                                    serial = mapping.serial,
+                                    payloadBits = encoded.bits,
+                                    outputStem = stem,
+                                    outputFileName = "$stem.$extension",
+                                    eccWireName = EccLevel.BCH_SUPER.wireName,
+                                    strength = generate.strength,
+                                )
+                            }
+                        }
                     }
+
                     PayloadCodec.validateBatch(tasks)?.let { error(it) }
-                    TaskPlanStore.write(application, batch.batchId, tasks) to tasks.size
+                    TaskPlanStore.write(application, planKey, tasks) to tasks.size
                 }
 
                 val path = prepared.first
@@ -267,9 +275,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     .setInputData(
                         workDataOf(
                             WorkerKeys.TASKS_PATH to path.absolutePath,
-                            WorkerKeys.BATCH_ID to batchId,
                             WorkerKeys.TOTAL to total,
-                            WorkerKeys.STRENGTH to DEFAULT_STRENGTH,
                         ),
                     )
                     .addTag(WorkerKeys.UNIQUE_ENCODE)
@@ -469,10 +475,16 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             val summaries = withContext(Dispatchers.IO) { BatchStore.listSummaries(application) }
             _uiState.update { state ->
                 val ids = summaries.map { it.batch.batchId }.toSet()
+                val keep = state.generate.selectedBatchId?.takeIf { it in ids }
+                val fallback = summaries.firstOrNull()?.batch?.batchId
                 state.copy(
                     batches = summaries,
                     generate = state.generate.copy(
-                        selectedBatchId = state.generate.selectedBatchId?.takeIf { it in ids },
+                        selectedBatchId = if (state.generate.mode == GenerateMode.BATCH) {
+                            keep ?: fallback
+                        } else {
+                            keep
+                        },
                     ),
                 )
             }
@@ -480,7 +492,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     /**
-     * 模式一：先建表再生成。接收人按输入顺序分配编号 1..N。
+     * 先建表再生成。接收人按输入顺序分配 1..N；批次短码为 4 个大写字母。
      */
     fun createMappedBatch(name: String, recipients: List<String>, note: String) {
         val cleanedName = name.trim()
@@ -494,8 +506,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 _uiState.update { it.copy(message = "请至少填写一位接收人") }
                 return
             }
-            cleanedRecipients.size > MAX_COPIES_PER_IMAGE -> {
-                _uiState.update { it.copy(message = "单个批次最多 $MAX_COPIES_PER_IMAGE 位接收人") }
+            cleanedRecipients.size > PayloadCodec.MAX_BATCH_SERIAL -> {
+                _uiState.update {
+                    it.copy(message = "单个批次最多 ${PayloadCodec.MAX_BATCH_SERIAL} 位接收人")
+                }
                 return
             }
             cleanedRecipients.any { it.isEmpty() } -> {
@@ -504,11 +518,15 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             }
         }
 
-        val ecc = _uiState.value.generate.ecc
         viewModelScope.launch {
             try {
                 val result = withContext(Dispatchers.IO) {
-                    val batch = BatchStore.createBatch(application, cleanedName, ecc.wireName, note)
+                    val batch = BatchStore.createBatch(
+                        application,
+                        cleanedName,
+                        EccLevel.BCH_SUPER.wireName,
+                        note,
+                    )
                     cleanedRecipients.forEachIndexed { index, recipient ->
                         BatchStore.addMapping(application, batch.batchId, index + 1, recipient, "")
                     }
@@ -518,8 +536,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     state.copy(
                         batches = result.second,
                         generate = state.generate.copy(
-                            useBatch = true,
+                            mode = GenerateMode.BATCH,
                             selectedBatchId = result.first.batchId,
+                            ecc = EccLevel.BCH_SUPER,
                         ),
                         message = "批次 ${result.first.batchId} 已创建，共 ${cleanedRecipients.size} 个编号",
                     )
@@ -533,8 +552,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     /** 先生成后补表：逐行补填接收人。 */
     fun upsertMapping(batchId: String, serialText: String, recipient: String, note: String) {
         val serial = serialText.trim().toIntOrNull()
-        if (serial == null || serial <= 0) {
-            _uiState.update { it.copy(message = "编号必须是大于 0 的整数") }
+        if (serial == null || serial !in 1..PayloadCodec.MAX_BATCH_SERIAL) {
+            _uiState.update {
+                it.copy(message = "编号必须在 1–${PayloadCodec.MAX_BATCH_SERIAL} 之间")
+            }
             return
         }
         if (recipient.isBlank()) {
@@ -611,158 +632,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     fun batchExportFileName(json: Boolean): String {
         val stamp = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date())
         return "trustmark_mapping_$stamp.${if (json) "json" else "csv"}"
-    }
-
-    // ------------------------------------------------------------------ trace
-
-    fun addTraceImage(uri: Uri) {
-        viewModelScope.launch {
-            val image = resolveImages(listOf(uri)).firstOrNull()
-            if (image == null) {
-                _uiState.update { it.copy(message = "无法读取所选图片") }
-            } else {
-                _uiState.update {
-                    it.copy(
-                        trace = TraceUiState(
-                            selected = image,
-                            selectedBatchId = it.trace.selectedBatchId,
-                        ),
-                    )
-                }
-            }
-        }
-    }
-
-    fun selectTraceBatch(batchId: String?) {
-        _uiState.update { state ->
-            state.copy(trace = state.trace.copy(selectedBatchId = batchId))
-        }
-    }
-
-    /**
-     * 溯源三态严格区分：
-     * - 解码抛错 => DECODE_FAILED；
-     * - 解码成功但没有批次/编号/映射 => BATCH_NOT_FOUND 或 NO_MATCH；
-     * - 批次 + serial 命中映射 => MATCH。
-     */
-    fun startTrace() {
-        val state = _uiState.value
-        val selected = state.trace.selected
-        if (selected == null) {
-            _uiState.update { it.copy(message = "请先选择一张疑似泄露图片") }
-            return
-        }
-        if (state.trace.running) return
-        if (!TrustMarkNative.isLibraryLoaded) {
-            _uiState.update { it.copy(message = "JNI 推理库未加载，请确认 ABI 与 APK 匹配") }
-            return
-        }
-
-        _uiState.update {
-            it.copy(
-                trace = it.trace.copy(
-                    status = TraceStatus.DECODING,
-                    running = true,
-                    error = null,
-                    message = null,
-                    payloadBits = "",
-                    decodedText = null,
-                    serial = null,
-                    confidence = 0f,
-                    bitflips = 0,
-                    ecc = null,
-                    batchIdFromFile = null,
-                    batchId = null,
-                    batchName = null,
-                    recipient = null,
-                    batchCreatedAt = null,
-                ),
-            )
-        }
-
-        viewModelScope.launch {
-            try {
-                val decoded = withContext(Dispatchers.IO) {
-                    ModelRepository.ensureModels(application) { }
-                    TrustMarkEngine.ensureInitialized(application)
-                    val bytes = ImageStore.readBytes(application, selected.uri)
-                    val orientation = ImageOrientation.read(application, selected.uri)
-                    TrustMarkEngine.decode(application, bytes, orientation)
-                }
-                val frame = PayloadCodec.decode(decoded.payloadBits)
-                val parsed = OutputNaming.parse(selected.displayName)
-                val serialLong = frame.serial ?: parsed?.serial?.toLong()
-                val serial = serialLong
-                    ?.takeIf { it in 1..Int.MAX_VALUE.toLong() }
-                    ?.toInt()
-                val batchIdFromFile = parsed?.batchId
-                val chosenBatchId = batchIdFromFile ?: _uiState.value.trace.selectedBatchId
-
-                val result = withContext(Dispatchers.IO) {
-                    val batch = chosenBatchId?.let { BatchStore.getBatch(application, it) }
-                    val mapping = if (batch != null && serial != null) {
-                        BatchStore.getMapping(application, batch.batchId, serial)
-                    } else {
-                        null
-                    }
-                    Triple(batch, mapping, chosenBatchId)
-                }
-                val batch = result.first
-                val mapping = result.second
-                val batchId = result.third
-
-                val base = _uiState.value.trace.copy(
-                    running = false,
-                    payloadBits = decoded.payloadBits,
-                    decodedText = frame.text,
-                    serial = serial,
-                    confidence = decoded.confidence,
-                    bitflips = decoded.bitflips,
-                    ecc = decoded.version,
-                    batchIdFromFile = batchIdFromFile,
-                    batchId = batchId,
-                )
-
-                val updated = when {
-                    // 文件名解析出了批次短码，但本地没有该批次：单独提示。
-                    batchIdFromFile != null && batch == null -> base.copy(
-                        status = TraceStatus.BATCH_NOT_FOUND,
-                        message = "批次短码存在但本地无此批次记录",
-                    )
-                    batchId == null -> base.copy(
-                        status = TraceStatus.NO_MATCH,
-                        message = "未找到对应批次记录",
-                    )
-                    serial == null -> base.copy(
-                        status = TraceStatus.NO_MATCH,
-                        message = "水印已解码，但 payload 中没有编号",
-                    )
-                    mapping == null -> base.copy(
-                        status = TraceStatus.NO_MATCH,
-                        message = "未找到对应批次记录",
-                    )
-                    else -> base.copy(
-                        status = TraceStatus.MATCH,
-                        batchName = batch!!.name,
-                        recipient = mapping!!.recipientName.ifBlank { "（未填写接收人）" },
-                        batchCreatedAt = batch.createdAt,
-                        message = null,
-                    )
-                }
-                _uiState.update { it.copy(trace = updated) }
-            } catch (error: Exception) {
-                _uiState.update {
-                    it.copy(
-                        trace = it.trace.copy(
-                            running = false,
-                            status = TraceStatus.DECODE_FAILED,
-                            error = error.message ?: error.javaClass.simpleName,
-                            message = "水印可能已被破坏或模型变体不匹配。请检查图片是否经过严重压缩或多次转发。",
-                        ),
-                    )
-                }
-            }
-        }
     }
 
     // ------------------------------------------------------------------ model
@@ -1051,7 +920,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     companion object {
         const val MAX_BATCH = 50
-        const val MAX_COPIES_PER_IMAGE = 99
-        private const val DEFAULT_STRENGTH = 0.95f
+        const val MIN_STRENGTH = 0.5f
+        const val MAX_STRENGTH = 2.0f
+        const val DEFAULT_STRENGTH = 1.3f
     }
 }

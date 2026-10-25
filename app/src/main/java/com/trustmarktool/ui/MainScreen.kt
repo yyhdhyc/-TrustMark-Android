@@ -12,11 +12,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Edit
 import androidx.compose.material.icons.outlined.Search
-import androidx.compose.material.icons.outlined.TravelExplore
-import androidx.compose.material3.CenterAlignedTopAppBar
-import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
-import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
@@ -31,13 +27,11 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.text.style.TextOverflow
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.trustmarktool.MainViewModel
 import com.trustmarktool.model.MainUiState
 
-@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun MainScreen(viewModel: MainViewModel) {
     val state by viewModel.uiState.collectAsStateWithLifecycle()
@@ -59,7 +53,7 @@ fun MainScreen(viewModel: MainViewModel) {
         pendingDeniedAction = null
         pendingPermissions = emptyList()
 
-        // 通知权限只是体验增强；API <= 28 的旧版存储权限才可能影响保存。
+        // POST_NOTIFICATIONS 只影响进度通知；旧版存储权限才可能影响保存。
         val required = requested.filterNot { it == Manifest.permission.POST_NOTIFICATIONS }
         val requiredGranted = required.all { permission ->
             result[permission] == true ||
@@ -119,20 +113,12 @@ fun MainScreen(viewModel: MainViewModel) {
         ActivityResultContracts.PickMultipleVisualMedia(MainViewModel.MAX_BATCH),
     ) { uris -> if (uris.isNotEmpty()) viewModel.addDecodeImages(uris) }
 
-    val tracePicker = rememberLauncherForActivityResult(
-        ActivityResultContracts.PickVisualMedia(),
-    ) { uri -> uri?.let(viewModel::addTraceImage) }
-
     fun launchGeneratePicker() {
         generatePicker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
     }
 
     fun launchDecodePicker() {
         decodePicker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
-    }
-
-    fun launchTracePicker() {
-        tracePicker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
     }
 
     fun pickGenerate() {
@@ -159,18 +145,6 @@ fun MainScreen(viewModel: MainViewModel) {
         }
     }
 
-    fun pickTrace() {
-        if (Build.VERSION.SDK_INT <= Build.VERSION_CODES.S_V2) {
-            withPermissions(
-                permissions = listOf(Manifest.permission.READ_EXTERNAL_STORAGE),
-                onDenied = { launchTracePicker() },
-                action = { launchTracePicker() },
-            )
-        } else {
-            launchTracePicker()
-        }
-    }
-
     val decodeCsv = rememberLauncherForActivityResult(
         ActivityResultContracts.CreateDocument("text/csv"),
     ) { uri -> uri?.let { viewModel.exportDecode(it, json = false) } }
@@ -194,22 +168,6 @@ fun MainScreen(viewModel: MainViewModel) {
     }
 
     Scaffold(
-        topBar = {
-            CenterAlignedTopAppBar(
-                title = {
-                    Column {
-                        Text("TrustMark 工具")
-                        Text(
-                            "端侧批量隐水印 · Q 模型 · 批次溯源",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
-                        )
-                    }
-                },
-            )
-        },
         snackbarHost = { SnackbarHost(snackbarHostState) },
     ) { padding ->
         Column(
@@ -221,20 +179,14 @@ fun MainScreen(viewModel: MainViewModel) {
                 Tab(
                     selected = state.tab == 0,
                     onClick = { viewModel.selectTab(0) },
-                    text = { Text("生成水印") },
+                    text = { Text("生成") },
                     icon = { Icon(Icons.Outlined.Edit, contentDescription = null) },
                 )
                 Tab(
                     selected = state.tab == 1,
                     onClick = { viewModel.selectTab(1) },
-                    text = { Text("批量解密") },
+                    text = { Text("解密") },
                     icon = { Icon(Icons.Outlined.Search, contentDescription = null) },
-                )
-                Tab(
-                    selected = state.tab == 2,
-                    onClick = { viewModel.selectTab(2) },
-                    text = { Text("溯源查询") },
-                    icon = { Icon(Icons.Outlined.TravelExplore, contentDescription = null) },
                 )
             }
 
@@ -248,21 +200,13 @@ fun MainScreen(viewModel: MainViewModel) {
                     onManageBatches = { showBatchDialog = true },
                 )
 
-                1 -> DecodeScreen(
+                else -> DecodeScreen(
                     state = state,
                     viewModel = viewModel,
                     onPickImages = ::pickDecode,
                     onStart = { requestTaskPermissions(viewModel::startDecode) },
                     onExportCsv = { decodeCsv.launch(viewModel.decodeExportFileName(json = false)) },
                     onExportJson = { decodeJson.launch(viewModel.decodeExportFileName(json = true)) },
-                )
-
-                else -> TraceScreen(
-                    state = state,
-                    viewModel = viewModel,
-                    onPickImage = ::pickTrace,
-                    onStart = { requestTaskPermissions(viewModel::startTrace) },
-                    onManageBatches = { showBatchDialog = true },
                 )
             }
         }
@@ -283,8 +227,8 @@ fun MainScreen(viewModel: MainViewModel) {
 }
 
 /**
- * Kept to document that READ_MEDIA_IMAGES is only a manifest declaration for
- * legacy OEM pickers; the system Photo Picker grants per-URI access instead.
+ * READ_MEDIA_IMAGES 仅作为旧 OEM 选择器的 manifest 声明；现代系统 Photo
+ * Picker 通过每次选择的 URI 授权，不申请全库读取。
  */
 @Suppress("unused")
 private fun MainUiState.mediaPermission(): String =

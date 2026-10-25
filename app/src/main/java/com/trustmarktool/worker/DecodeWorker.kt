@@ -5,6 +5,7 @@ import android.net.Uri
 import androidx.work.CoroutineWorker
 import androidx.work.WorkerParameters
 import androidx.work.workDataOf
+import com.trustmarktool.data.BatchStore
 import com.trustmarktool.data.DecodeStore
 import com.trustmarktool.data.ImageOrientation
 import com.trustmarktool.data.ImageStore
@@ -77,26 +78,64 @@ class DecodeWorker(
                     val orientation = ImageOrientation.read(context, uri)
                     val decoded = TrustMarkEngine.decode(context, bytes, orientation)
                     val frame = PayloadCodec.decode(decoded.payloadBits)
-                    records += DecodeRecord(
-                        fileName = fileName,
-                        decodedText = frame.text,
-                        serial = frame.serial,
-                        payloadBits = decoded.payloadBits,
-                        format = frame.format.label,
-                        ecc = decoded.version,
-                        confidence = decoded.confidence,
-                        bitflips = decoded.bitflips,
-                        error = null,
-                    )
+                    if (!frame.valid) {
+                        throw IllegalArgumentException(frame.error ?: "解码失败")
+                    }
+                    when (frame.frameType) {
+                        PayloadCodec.FrameType.UNIVERSAL -> {
+                            records += DecodeRecord(
+                                fileName = fileName,
+                                frameType = PayloadCodec.FrameType.UNIVERSAL.label,
+                                decodedText = frame.text,
+                                batchId = null,
+                                serial = null,
+                                batchName = null,
+                                recipient = null,
+                                payloadBits = decoded.payloadBits,
+                                ecc = decoded.version,
+                                confidence = decoded.confidence,
+                                bitflips = decoded.bitflips,
+                                error = null,
+                            )
+                        }
+                        PayloadCodec.FrameType.BATCH -> {
+                            val batchId = frame.batchId
+                            val serial = frame.serial
+                            val batch = batchId?.let { BatchStore.getBatch(context, it) }
+                            val mapping = if (batch != null && serial != null) {
+                                BatchStore.getMapping(context, batch.batchId, serial)
+                            } else {
+                                null
+                            }
+                            records += DecodeRecord(
+                                fileName = fileName,
+                                frameType = PayloadCodec.FrameType.BATCH.label,
+                                decodedText = null,
+                                batchId = batchId,
+                                serial = serial,
+                                batchName = batch?.name,
+                                recipient = mapping?.recipientName,
+                                payloadBits = decoded.payloadBits,
+                                ecc = decoded.version,
+                                confidence = decoded.confidence,
+                                bitflips = decoded.bitflips,
+                                error = null,
+                            )
+                        }
+                        null -> throw IllegalArgumentException("无法识别帧类型")
+                    }
                 } catch (cancelled: CancellationException) {
                     throw cancelled
                 } catch (error: Exception) {
                     records += DecodeRecord(
                         fileName = fileName,
+                        frameType = null,
                         decodedText = null,
+                        batchId = null,
                         serial = null,
+                        batchName = null,
+                        recipient = null,
                         payloadBits = "",
-                        format = "—",
                         ecc = null,
                         confidence = 0f,
                         bitflips = 0,

@@ -16,15 +16,16 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.itemsIndexed
-import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.ExpandLess
+import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material.icons.outlined.AddPhotoAlternate
 import androidx.compose.material.icons.outlined.CheckCircle
 import androidx.compose.material.icons.outlined.DeleteSweep
 import androidx.compose.material.icons.outlined.Download
 import androidx.compose.material.icons.outlined.ErrorOutline
-import androidx.compose.material.icons.outlined.PlayArrow
+import androidx.compose.material.icons.outlined.HelpOutline
 import androidx.compose.material.icons.outlined.Search
 import androidx.compose.material.icons.outlined.Stop
 import androidx.compose.material3.Button
@@ -34,18 +35,25 @@ import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.LinearProgressIndicator
+import androidx.compose.material3.ListItem
+import androidx.compose.material3.ListItemDefaults
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import coil.compose.AsyncImage
@@ -55,6 +63,10 @@ import com.trustmarktool.model.MainUiState
 import com.trustmarktool.model.PayloadCodec
 import com.trustmarktool.model.TaskProgress
 import com.trustmarktool.model.TaskState
+import java.util.Locale
+
+private val SuccessGreen = Color(0xFF2E7D32)
+private val LocalMissAmber = Color(0xFFF9A825)
 
 @Composable
 fun DecodeScreen(
@@ -72,12 +84,12 @@ fun DecodeScreen(
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
         contentPadding = PaddingValues(16.dp),
-        verticalArrangement = Arrangement.spacedBy(14.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
         item {
             Text("批量解密", style = MaterialTheme.typography.headlineSmall)
             Text(
-                "逐张运行 TrustMark 解码器，恢复二进制 payload 并反向解析文本与编号。支持 JPEG / PNG。",
+                "自动识别帧类型：通用帧恢复文本；批次帧校验 CRC-7 后恢复 4 字母批次码与 12 位编号，并查询本地映射表。",
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.padding(top = 4.dp),
@@ -87,6 +99,7 @@ fun DecodeScreen(
         item {
             DecodePickerCard(
                 images = decode.selected,
+                enabled = !running,
                 onPick = onPickImages,
                 onClear = viewModel::clearDecodeImages,
             )
@@ -107,7 +120,7 @@ fun DecodeScreen(
                         color = MaterialTheme.colorScheme.onPrimary,
                     )
                     Spacer(Modifier.width(8.dp))
-                    Text("正在处理中")
+                    Text("正在解密")
                 } else {
                     Icon(Icons.Outlined.Search, contentDescription = null)
                     Spacer(Modifier.width(8.dp))
@@ -124,7 +137,7 @@ fun DecodeScreen(
             if (decode.task == null) {
                 item {
                     Card(
-                        shape = RoundedCornerShape(20.dp),
+                        shape = RoundedCornerShape(16.dp),
                         colors = CardDefaults.cardColors(
                             containerColor = MaterialTheme.colorScheme.secondaryContainer,
                         ),
@@ -150,13 +163,16 @@ fun DecodeScreen(
                 )
             }
 
-            itemsIndexed(decode.results) { _, record ->
-                DecodeResultCard(record)
+            itemsIndexed(
+                items = decode.results,
+                key = { index, record -> "${record.fileName}-$index" },
+            ) { _, record ->
+                DecodeResultRow(record)
             }
 
             item {
                 Text(
-                    "置信度是解码器输出的 soft confidence，不等同于“100% 正确”；BCH 翻转位过多时建议人工复核。",
+                    "绿色：通用帧解码成功，或批次帧命中映射表；黄色：批次帧有效但本地无此批次记录；红色：水印损坏、CRC 校验失败或模型不匹配。",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -166,7 +182,7 @@ fun DecodeScreen(
         if (!hasResults && !running && decode.task == null) {
             item {
                 Text(
-                    "选择图片后点击“开始批量解密”。结果会显示文件名、解码文本、编号、原始二进制与置信度，并可导出 CSV/JSON。",
+                    "选择图片后开始解密。结果按“文件名 → 帧类型 → 文本/批次编号 → 置信度”展示，可导出 CSV/JSON。",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -178,15 +194,16 @@ fun DecodeScreen(
 @Composable
 private fun DecodePickerCard(
     images: List<com.trustmarktool.model.SelectedImage>,
+    enabled: Boolean,
     onPick: () -> Unit,
     onClear: () -> Unit,
 ) {
-    Card(shape = RoundedCornerShape(20.dp)) {
-        Column(Modifier.padding(16.dp)) {
+    Card(shape = RoundedCornerShape(18.dp)) {
+        Column(Modifier.padding(14.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Icon(Icons.Outlined.AddPhotoAlternate, contentDescription = null)
                 Spacer(Modifier.width(8.dp))
-                Text("待解密图片", style = MaterialTheme.typography.titleMedium)
+                Text("待解密图片", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
                 Spacer(Modifier.weight(1f))
                 Text(
                     "${images.size} 张",
@@ -197,7 +214,7 @@ private fun DecodePickerCard(
 
             if (images.isEmpty()) {
                 Text(
-                    "单批最多 ${MainViewModel.MAX_BATCH} 张。",
+                    "单批最多 ${MainViewModel.MAX_BATCH} 张，支持 JPEG / PNG。",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.padding(vertical = 12.dp),
@@ -207,7 +224,7 @@ private fun DecodePickerCard(
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
                     modifier = Modifier.padding(vertical = 12.dp),
                 ) {
-                    itemsIndexed(images) { index, image ->
+                    itemsIndexed(images, key = { index, _ -> index }) { index, image ->
                         Box {
                             AsyncImage(
                                 model = image.uri,
@@ -215,7 +232,7 @@ private fun DecodePickerCard(
                                 contentScale = ContentScale.Crop,
                                 modifier = Modifier
                                     .size(76.dp)
-                                    .clip(RoundedCornerShape(14.dp))
+                                    .clip(RoundedCornerShape(12.dp))
                                     .background(MaterialTheme.colorScheme.surfaceVariant),
                             )
                             Surface(
@@ -236,13 +253,13 @@ private fun DecodePickerCard(
             }
 
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                OutlinedButton(onClick = onPick) {
+                OutlinedButton(onClick = onPick, enabled = enabled) {
                     Icon(Icons.Outlined.AddPhotoAlternate, contentDescription = null)
                     Spacer(Modifier.width(6.dp))
                     Text(if (images.isEmpty()) "从相册选择" else "继续添加")
                 }
                 if (images.isNotEmpty()) {
-                    TextButton(onClick = onClear) {
+                    TextButton(onClick = onClear, enabled = enabled) {
                         Icon(Icons.Outlined.DeleteSweep, contentDescription = null)
                         Spacer(Modifier.width(4.dp))
                         Text("清空")
@@ -262,7 +279,7 @@ private fun DecodeTaskCard(task: TaskProgress, onCancel: () -> Unit) {
         TaskState.ERROR -> "处理失败" to Icons.Outlined.ErrorOutline
     }
     Card(
-        shape = RoundedCornerShape(20.dp),
+        shape = RoundedCornerShape(16.dp),
         colors = CardDefaults.cardColors(
             containerColor = if (task.state == TaskState.ERROR) {
                 MaterialTheme.colorScheme.errorContainer
@@ -272,18 +289,21 @@ private fun DecodeTaskCard(task: TaskProgress, onCancel: () -> Unit) {
         ),
     ) {
         Column(
-            Modifier.padding(16.dp),
+            Modifier.padding(14.dp),
             verticalArrangement = Arrangement.spacedBy(8.dp),
         ) {
             Row(verticalAlignment = Alignment.CenterVertically) {
-                if (task.state == TaskState.RUNNING) {
-                    CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp)
-                    Spacer(Modifier.width(8.dp))
-                } else if (icon != null) {
-                    Icon(icon, contentDescription = null)
-                    Spacer(Modifier.width(8.dp))
+                when {
+                    task.state == TaskState.RUNNING -> {
+                        CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp)
+                        Spacer(Modifier.width(8.dp))
+                    }
+                    icon != null -> {
+                        Icon(icon, contentDescription = null)
+                        Spacer(Modifier.width(8.dp))
+                    }
                 }
-                Text(title, style = MaterialTheme.typography.titleMedium)
+                Text(title, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
                 Spacer(Modifier.weight(1f))
                 Text(
                     if (task.total > 0) "${task.completed}/${task.total}" else "",
@@ -293,18 +313,9 @@ private fun DecodeTaskCard(task: TaskProgress, onCancel: () -> Unit) {
 
             if (task.state == TaskState.RUNNING) {
                 if (task.indeterminate) {
-                    LinearProgressIndicator(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .clip(CircleShape),
-                    )
+                    LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
                 } else {
-                    LinearProgressIndicator(
-                        progress = { task.fraction },
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .clip(CircleShape),
-                    )
+                    LinearProgressIndicator(progress = { task.fraction }, modifier = Modifier.fillMaxWidth())
                 }
                 Text(
                     task.currentFile.ifBlank { "处理中…" },
@@ -368,96 +379,125 @@ private fun ResultsHeader(
 }
 
 @Composable
-private fun DecodeResultCard(record: DecodeRecord) {
-    val success = record.succeeded
-    Card(
-        shape = RoundedCornerShape(18.dp),
-        colors = CardDefaults.cardColors(
-            containerColor = if (success) {
-                MaterialTheme.colorScheme.surfaceContainerLow
-            } else {
-                MaterialTheme.colorScheme.errorContainer
-            },
-        ),
-    ) {
-        Column(
-            Modifier.padding(14.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp),
-        ) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Text(
-                    record.fileName,
-                    style = MaterialTheme.typography.titleSmall,
-                    maxLines = 2,
-                    overflow = TextOverflow.Ellipsis,
-                    modifier = Modifier.weight(1f),
-                )
-                Spacer(Modifier.width(8.dp))
-                if (success) {
-                    ConfidenceBadge(record.confidence)
-                } else {
-                    Tag("失败", MaterialTheme.colorScheme.error)
-                }
-            }
+private fun DecodeResultRow(record: DecodeRecord) {
+    var expanded by remember(record) { mutableStateOf(false) }
+    val succeeded = record.succeeded
+    val color = when {
+        !succeeded -> MaterialTheme.colorScheme.error
+        record.batchMatched -> SuccessGreen
+        record.frameType == PayloadCodec.FrameType.BATCH.label -> LocalMissAmber
+        else -> SuccessGreen
+    }
+    val icon = when {
+        !succeeded -> Icons.Outlined.ErrorOutline
+        record.frameType == PayloadCodec.FrameType.BATCH.label && !record.batchMatched -> Icons.Outlined.HelpOutline
+        else -> Icons.Outlined.CheckCircle
+    }
 
-            if (success) {
-                Text(
-                    record.decodedText?.ifBlank { "（无文本，仅编号）" } ?: "—",
-                    style = MaterialTheme.typography.headlineSmall,
-                    color = MaterialTheme.colorScheme.primary,
-                )
-                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                    Tag("编号 ${record.serial ?: "—"}")
-                    record.ecc?.let { Tag(it) }
-                    Tag("${record.format} · 翻转 ${record.bitflips}")
+    Surface(color = Color.Transparent) {
+        Column {
+            ListItem(
+                colors = ListItemDefaults.colors(containerColor = Color.Transparent),
+                leadingContent = {
+                    Icon(icon, contentDescription = null, tint = color)
+                },
+                headlineContent = {
+                    Text(
+                        record.fileName,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        style = MaterialTheme.typography.titleSmall,
+                    )
+                },
+                supportingContent = {
+                    Column(verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                        when {
+                            !succeeded -> Text(
+                                record.error ?: "解码失败",
+                                color = MaterialTheme.colorScheme.error,
+                                style = MaterialTheme.typography.bodySmall,
+                            )
+                            record.frameType == PayloadCodec.FrameType.BATCH.label -> {
+                                Text(
+                                    "批次 ${record.batchId ?: "—"} · 编号 ${record.serial ?: "—"}",
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    fontWeight = FontWeight.Medium,
+                                )
+                                if (record.batchMatched) {
+                                    Text(
+                                        listOfNotNull(record.batchName, record.recipient)
+                                            .joinToString(" · ")
+                                            .ifBlank { "本地映射命中" },
+                                        style = MaterialTheme.typography.bodySmall,
+                                    )
+                                } else {
+                                    Text(
+                                        "本地无匹配：批次有效，但映射表中没有该记录",
+                                        color = LocalMissAmber,
+                                        style = MaterialTheme.typography.bodySmall,
+                                    )
+                                }
+                            }
+                            else -> Text(
+                                record.decodedText?.ifBlank { "（空文本）" } ?: "—",
+                                style = MaterialTheme.typography.bodyMedium,
+                                fontWeight = FontWeight.Medium,
+                            )
+                        }
+                        Text(
+                            buildString {
+                                append(record.frameType ?: "未知帧")
+                                record.ecc?.let { append(" · ").append(it) }
+                                append(" · 置信度 ").append(formatConfidence(record.confidence))
+                                append(" · 翻转 ").append(record.bitflips)
+                            },
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                },
+                trailingContent = {
+                    IconButtonCompact(
+                        expanded = expanded,
+                        onClick = { expanded = !expanded },
+                    )
+                },
+            )
+
+            if (expanded) {
+                Column(
+                    modifier = Modifier.padding(start = 56.dp, end = 16.dp, bottom = 10.dp),
+                    verticalArrangement = Arrangement.spacedBy(4.dp),
+                ) {
+                    HorizontalDivider()
+                    Text(
+                        "原始 payload · ${record.payloadBits.length} 位",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    Text(
+                        PayloadCodec.binaryGroups(record.payloadBits),
+                        style = MaterialTheme.typography.labelSmall.copy(fontFamily = FontFamily.Monospace),
+                    )
                 }
-                HorizontalDivider()
-                Text(
-                    "原始 payload · ${record.payloadBits.length} 位",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-                Text(
-                    PayloadCodec.binaryGroups(record.payloadBits),
-                    style = MaterialTheme.typography.labelSmall.copy(
-                        fontFamily = FontFamily.Monospace,
-                    ),
-                )
-            } else {
-                Text(
-                    record.error ?: "解码失败",
-                    style = MaterialTheme.typography.bodyMedium,
-                )
-                Text(
-                    "置信度 ${"%.3f".format(record.confidence)} · 翻转位 ${record.bitflips}",
-                    style = MaterialTheme.typography.bodySmall,
-                )
             }
+            HorizontalDivider(
+                modifier = Modifier.padding(start = 16.dp),
+                color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f),
+            )
         }
     }
 }
 
 @Composable
-private fun ConfidenceBadge(confidence: Float) {
-    val color = when {
-        confidence >= 0.85f -> MaterialTheme.colorScheme.primary
-        confidence >= 0.60f -> MaterialTheme.colorScheme.tertiary
-        else -> MaterialTheme.colorScheme.error
-    }
-    Tag("置信度 ${"%.3f".format(confidence)}", color)
-}
-
-@Composable
-private fun Tag(text: String, color: Color = MaterialTheme.colorScheme.secondary) {
-    Surface(
-        shape = CircleShape,
-        color = color.copy(alpha = 0.14f),
-    ) {
-        Text(
-            text,
-            style = MaterialTheme.typography.labelSmall,
-            color = color,
-            modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp),
+private fun IconButtonCompact(expanded: Boolean, onClick: () -> Unit) {
+    TextButton(onClick = onClick) {
+        Icon(
+            if (expanded) Icons.Filled.ExpandLess else Icons.Filled.ExpandMore,
+            contentDescription = if (expanded) "收起" else "展开",
         )
     }
 }
+
+private fun formatConfidence(value: Float): String =
+    String.format(Locale.US, "%.3f", value)

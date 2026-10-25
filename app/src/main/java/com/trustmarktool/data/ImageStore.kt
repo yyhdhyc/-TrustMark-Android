@@ -86,14 +86,14 @@ object ImageStore {
     )
 
     /**
-     * Saves to Pictures/TrustMarkTool. The caller supplies the exact stem
-     * `{base}_tm_b{batch}_n{serial}`; the actual extension is chosen from the
-     * encoded output bytes (PNG stays PNG, everything else becomes JPEG).
+     * Saves to Pictures/TrustMarkTool. The caller supplies the stem
+     * `{base}_tm`; the actual extension is chosen from the encoded output bytes
+     * (PNG stays PNG, everything else becomes JPEG).
      *
      * MediaStore (API 29+) or a collision-checked file (API 26–28) prevents
      * overwriting the source. If a duplicate stem already exists, `_2` is
-     * appended by the platform and the returned displayName is the actual
-     * name that must be written to OutputRecord.
+     * appended by the platform (`{base}_tm_2.ext`) and the returned displayName
+     * is the actual name that must be written to OutputRecord.
      */
     fun saveWatermarked(
         context: Context,

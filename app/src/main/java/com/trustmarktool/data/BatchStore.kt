@@ -41,7 +41,8 @@ object BatchStore {
     private const val VERSION = 1
     private const val GCM_TAG_BITS = 128
 
-    private const val CODE_ALPHABET = "23456789ABCDEFGHJKLMNPQRSTUVWXYZ"
+    // v1.2 batch code: exactly four letters A-Z (20 bits in the batch frame).
+    private const val CODE_ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
     private val lock = Any()
 
     data class Snapshot(
@@ -59,6 +60,7 @@ object BatchStore {
     fun listSummaries(context: Context): List<BatchSummary> = synchronized(lock) {
         val snapshot = read(context)
         snapshot.batches
+            .filter { com.trustmarktool.model.PayloadCodec.isValidBatchCode(it.batchId) }
             .sortedByDescending { it.createdAt }
             .map { batch ->
                 BatchSummary(
@@ -79,12 +81,13 @@ object BatchStore {
     }
 
     /**
-     * “先建表再生成”的入口。短码自动生成，形如 B7K2，并在存储内唯一。
+     * “先建表再生成”的入口。短码自动生成，形如 BQKZ（4 个字母 A–Z），
+     * 并在存储内唯一。旧版 B+3 位、G+时间戳短码不再生成。
      */
     fun createBatch(
         context: Context,
         name: String,
-        ecc: String,
+        ecc: String = "BCH_SUPER",
         note: String = "",
     ): Batch = synchronized(lock) {
         val snapshot = read(context)
@@ -96,26 +99,6 @@ object BatchStore {
             modelVariant = "Q",
             ecc = ecc,
             note = note.trim(),
-        )
-        write(context, snapshot.copy(batches = snapshot.batches + batch))
-        batch
-    }
-
-    /**
-     * “先生成后补表”的默认批次：短码为 G + yyMMddHHmm（如 G2510221430）。
-     * 若同一分钟已有批次，追加数字保证唯一。
-     */
-    fun createGenericBatch(context: Context, ecc: String): Batch = synchronized(lock) {
-        val snapshot = read(context)
-        val existing = snapshot.batches.map { it.batchId }.toSet()
-        val now = System.currentTimeMillis()
-        val batch = Batch(
-            batchId = newGenericCode(existing, now),
-            name = "通用批次 ${formatTime(now)}",
-            createdAt = now,
-            modelVariant = "Q",
-            ecc = ecc,
-            note = "自动创建（先生成后补表）",
         )
         write(context, snapshot.copy(batches = snapshot.batches + batch))
         batch
@@ -166,7 +149,9 @@ object BatchStore {
         recipientName: String,
         note: String = "",
     ): MappingEntry = synchronized(lock) {
-        require(serial > 0) { "编号必须大于 0" }
+        require(serial in 1..com.trustmarktool.model.PayloadCodec.MAX_BATCH_SERIAL) {
+            "编号必须在 1–${com.trustmarktool.model.PayloadCodec.MAX_BATCH_SERIAL} 之间"
+        }
         val snapshot = read(context)
         require(snapshot.batches.any { it.batchId == batchId }) { "批次不存在：$batchId" }
         require(snapshot.mappings.none { it.batchId == batchId && it.serial == serial }) {
@@ -185,7 +170,9 @@ object BatchStore {
         recipientName: String,
         note: String = "",
     ): MappingEntry = synchronized(lock) {
-        require(serial > 0) { "编号必须大于 0" }
+        require(serial in 1..com.trustmarktool.model.PayloadCodec.MAX_BATCH_SERIAL) {
+            "编号必须在 1–${com.trustmarktool.model.PayloadCodec.MAX_BATCH_SERIAL} 之间"
+        }
         val snapshot = read(context)
         require(snapshot.batches.any { it.batchId == batchId }) { "批次不存在：$batchId" }
         val entry = MappingEntry(batchId, serial, recipientName.trim(), note.trim())
@@ -465,22 +452,11 @@ object BatchStore {
     private fun newBatchCode(existing: Set<String>): String {
         repeat(1000) {
             val code = buildString {
-                append('B')
-                repeat(3) { append(CODE_ALPHABET.random()) }
+                repeat(4) { append(CODE_ALPHABET.random()) }
             }
             if (code !in existing) return code
         }
         throw IllegalStateException("无法生成唯一批次短码")
-    }
-
-    private fun newGenericCode(existing: Set<String>, now: Long): String {
-        val format = SimpleDateFormat("yyMMddHHmm", Locale.US)
-        format.timeZone = TimeZone.getDefault()
-        val base = "G${format.format(Date(now))}"
-        if (base !in existing) return base
-        var index = 2
-        while ("$base$index" in existing) index += 1
-        return "$base$index"
     }
 
     private fun <T> JSONArray?.toObjects(transform: (JSONObject) -> T): List<T> {

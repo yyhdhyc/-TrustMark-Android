@@ -1,6 +1,7 @@
 package com.trustmarktool.model
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
@@ -9,137 +10,106 @@ import org.junit.Test
 class PayloadCodecTest {
 
     @Test
-    fun bch5SevenUppercasePlus16BitSerialFitsExactly() {
-        val frame = PayloadCodec.encode(
-            text = "ABCDEFG",
-            autoNumber = true,
-            serialWidth = SerialWidth.BITS_16,
-            serial = 42L,
-            ecc = EccLevel.BCH_5,
-        )
-
-        assertEquals(61, frame.plan.totalBits)
-        assertEquals(0, frame.plan.remainingBits)
-        assertEquals(61, frame.bits.length)
+    fun universalAlphaRoundTripHasNoSerial() {
+        val frame = PayloadCodec.encodeUniversal("ACME", EccLevel.BCH_5)
+        assertEquals(26, frame.bits.length)
+        assertEquals(PayloadCodec.TextMode.ALPHA, frame.plan.textMode)
 
         val decoded = PayloadCodec.decode(frame.bits)
-        assertEquals(PayloadCodec.FrameFormat.TMK2, decoded.format)
-        assertEquals("ABCDEFG", decoded.text)
-        assertEquals(42L, decoded.serial)
+        assertTrue(decoded.valid)
+        assertEquals(PayloadCodec.FrameType.UNIVERSAL, decoded.frameType)
+        assertEquals("ACME", decoded.text)
+        assertNull(decoded.serial)
+        assertNull(decoded.batchId)
     }
 
     @Test
-    fun bch5RejectsEightUppercaseWith16BitSerial() {
-        val plan = PayloadCodec.plan(
-            text = "ABCDEFGH",
-            autoNumber = true,
-            serialWidth = SerialWidth.BITS_16,
-            serial = 1L,
-            ecc = EccLevel.BCH_5,
-        )
-
-        assertTrue(!plan.valid)
-        assertEquals(66, plan.totalBits)
-        assertEquals(-5, plan.remainingBits)
-        assertNotNull(plan.error)
-    }
-
-    @Test
-    fun bch3AllowsTenUppercaseWith8BitSerial() {
-        val frame = PayloadCodec.encode(
-            text = "ABCDEFGHIJ",
-            autoNumber = true,
-            serialWidth = SerialWidth.BITS_8,
-            serial = 7L,
-            ecc = EccLevel.BCH_3,
-        )
-
-        assertEquals(68, frame.bits.length)
-        assertEquals(7, frame.plan.remainingBits)
-        val decoded = PayloadCodec.decode(frame.bits)
-        assertEquals("ABCDEFGHIJ", decoded.text)
-        assertEquals(7L, decoded.serial)
-    }
-
-    @Test
-    fun bch3AllowsTwelveUppercaseWithoutSerial() {
-        val plan = PayloadCodec.plan(
-            text = "CONFIDENTIAL",
-            autoNumber = false,
-            serialWidth = SerialWidth.NONE,
-            serial = null,
-            ecc = EccLevel.BCH_3,
-        )
-
-        assertTrue(plan.valid)
-        assertEquals(70, plan.totalBits)
-        assertEquals(5, plan.remainingBits)
-    }
-
-    @Test
-    fun bch5RejectsConfidentialEvenWithoutSerial() {
-        val plan = PayloadCodec.plan(
-            text = "CONFIDENTIAL",
-            autoNumber = false,
-            serialWidth = SerialWidth.NONE,
-            serial = null,
-            ecc = EccLevel.BCH_5,
-        )
-
-        assertTrue(!plan.valid)
-        assertEquals(70, plan.totalBits)
-    }
-
-    @Test
-    fun alphanumericUsesSixBitsPerCharacter() {
-        val frame = PayloadCodec.encode(
-            text = "A1-B",
-            autoNumber = false,
-            serialWidth = SerialWidth.NONE,
-            serial = null,
-            ecc = EccLevel.BCH_5,
-        )
-
+    fun universalAlnumUsesSixBitsPerCharacter() {
+        val frame = PayloadCodec.encodeUniversal("A1-B", EccLevel.BCH_5)
         assertEquals(PayloadCodec.TextMode.ALNUM, frame.plan.textMode)
-        assertEquals(24, frame.plan.textBits)
+        assertEquals(30, frame.bits.length)
         assertEquals("A1-B", PayloadCodec.decode(frame.bits).text)
     }
 
     @Test
-    fun serialBatchRangeIsOverflowSafe() {
-        assertNull(PayloadCodec.validateBatch(0, 1, SerialWidth.BITS_8, 256))
-        assertNotNull(PayloadCodec.validateBatch(250, 10, SerialWidth.BITS_8, 2))
-        assertNotNull(PayloadCodec.validateBatch(0, 1, SerialWidth.BITS_8, 257))
-        assertNull(
-            PayloadCodec.validateBatch(
-                start = 4_294_967_295L,
-                step = 1,
-                width = SerialWidth.BITS_32,
-                count = 1,
-            ),
-        )
+    fun universalCapacityIsCheckedAtPlanTime() {
+        // 6 + 12 * 5 = 66 bits: fits BCH_4 (68), not BCH_5 (61).
+        assertTrue(PayloadCodec.planUniversal("CONFIDENTIAL", EccLevel.BCH_5).error != null)
+        val frame = PayloadCodec.encodeUniversal("CONFIDENTIAL", EccLevel.BCH_4)
+        assertEquals("CONFIDENTIAL", PayloadCodec.decode(frame.bits).text)
     }
 
     @Test
-    fun autoNumberRequiresStartValue() {
-        val plan = PayloadCodec.plan(
-            text = "ACME",
-            autoNumber = true,
-            serialWidth = SerialWidth.BITS_16,
-            serial = null,
-            ecc = EccLevel.BCH_5,
-        )
-
-        assertTrue(!plan.valid)
-        assertNotNull(plan.error)
+    fun universalRejectsEmptyAndOverlongText() {
+        assertFalse(PayloadCodec.planUniversal("", EccLevel.BCH_5).valid)
+        assertFalse(PayloadCodec.planUniversal("A".repeat(16), EccLevel.BCH_3).valid)
+        assertEquals(11, PayloadCodec.maxTextLength(EccLevel.BCH_5, PayloadCodec.TextMode.ALPHA))
+        assertEquals(9, PayloadCodec.maxTextLength(EccLevel.BCH_5, PayloadCodec.TextMode.ALNUM))
     }
 
     @Test
-    fun rawSevenBitAsciiIsRecovered() {
-        val bits = "HELLO".map { it.code.toString(2).padStart(7, '0') }.joinToString("") + "000"
-        val decoded = PayloadCodec.decode(bits)
+    fun sanitizeInputUppercasesAndFiltersUnsupportedCharacters() {
+        assertEquals("AB-1_2.3 4", PayloadCodec.sanitizeInput("ab-1_2.3  $%4"))
+        assertEquals("A B", PayloadCodec.prepareText("  a   b  "))
+    }
 
-        assertEquals(PayloadCodec.FrameFormat.RAW_ASCII7, decoded.format)
-        assertEquals("HELLO", decoded.text)
+    @Test
+    fun crc7MatchesTheMmcCheckValue() {
+        // CRC-7/MMC check value for the ASCII string "123456789" is 0x75.
+        val bits = "123456789".map { it.code.toString(2).padStart(8, '0') }.joinToString("")
+        assertEquals(0x75, PayloadCodec.crc7(bits))
+
+        // Lock the exact 33-bit batch body vector: ABCD + serial 42 -> 0x46.
+        val abcd42 = "1" + "ABCD".map { (it - 'A').toString(2).padStart(5, '0') }.joinToString("") +
+            "42".toInt().toString(2).padStart(12, '0')
+        assertEquals(0x46, PayloadCodec.crc7(abcd42))
+    }
+
+    @Test
+    fun batchRoundTripCarriesFourLetterCodeAndTwelveBitSerial() {
+        val frame = PayloadCodec.encodeBatch("ABCD", 4095)
+        assertEquals(PayloadCodec.BATCH_TOTAL_BITS, frame.bits.length)
+
+        val decoded = PayloadCodec.decode(frame.bits)
+        assertTrue(decoded.valid)
+        assertEquals(PayloadCodec.FrameType.BATCH, decoded.frameType)
+        assertEquals("ABCD", decoded.batchId)
+        assertEquals(4095, decoded.serial)
+        assertTrue(decoded.crcValid)
+    }
+
+    @Test
+    fun batchCrcDetectsCorruption() {
+        val frame = PayloadCodec.encodeBatch("WXYZ", 7)
+        val corrupted = frame.bits.dropLast(1) + if (frame.bits.last() == '0') '1' else '0'
+        val decoded = PayloadCodec.decode(corrupted)
+        assertFalse(decoded.valid)
+        assertEquals(PayloadCodec.FrameType.BATCH, decoded.frameType)
+        assertFalse(decoded.crcValid)
+        assertNotNull(decoded.error)
+    }
+
+    @Test
+    fun batchRequiresValidCodeSerialAndBchSuper() {
+        assertFalse(PayloadCodec.planBatch("ABC", 1, EccLevel.BCH_SUPER).valid)
+        assertFalse(PayloadCodec.planBatch("ABCD", 0, EccLevel.BCH_SUPER).valid)
+        assertFalse(PayloadCodec.planBatch("ABCD", 4096, EccLevel.BCH_SUPER).valid)
+        assertFalse(PayloadCodec.planBatch("ABCD", 1, EccLevel.BCH_5).valid)
+    }
+
+    @Test
+    fun oldTmk2FrameIsNotSilentlyAccepted() {
+        val old = "101" + "0".repeat(97)
+        val decoded = PayloadCodec.decode(old)
+        assertFalse(decoded.valid)
+        assertEquals(PayloadCodec.FrameType.BATCH, decoded.frameType)
+    }
+
+    @Test
+    fun malformedAndTruncatedFramesAreRejected() {
+        assertFalse(PayloadCodec.decode("0102").valid)
+        assertFalse(PayloadCodec.decode("").valid)
+        assertFalse(PayloadCodec.decode("000").valid)
+        assertFalse(PayloadCodec.decode("1" + "0".repeat(20)).valid)
     }
 }

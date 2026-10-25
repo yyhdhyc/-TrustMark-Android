@@ -7,74 +7,80 @@ import java.util.Locale
  *  TEXT -> BINARY ENCODER (the layer TrustMark's Rust API does not provide)
  * ============================================================================
  *
- * TrustMark 0.4.0's Rust encoder accepts ONLY a bit string. It then:
- *   1. zero-pads the string to the selected schema's data capacity,
- *   2. appends BCH parity,
- *   3. appends four schema bits,
- *   4. feeds exactly 100 floats to encoder_Q.onnx.
+ * TrustMark only accepts a 0/1 bit string. It zero-pads to the selected BCH
+ * capacity, appends BCH parity and four schema bits, and feeds 100 floats to
+ * encoder_Q.onnx. The usable data capacities are:
  *
- * The four schema bits are automatic. `EccLevel.dataBits` is the usable budget:
- *   BCH_SUPER = 40, BCH_5 = 61, BCH_4 = 68, BCH_3 = 75.
+ *   BCH_SUPER = 40, BCH_5 = 61, BCH_4 = 68, BCH_3 = 75 bits.
  *
- * We therefore define our own self-describing frame inside that budget so a
- * decoded 61/68/75-bit payload can be converted back to text + serial:
+ * v1.2 defines two self-describing frames. The first bit is the frame type.
  *
- *   magic         3 bits   always 101
- *   text alphabet 1 bit    0 = A-Z (5 bits/char), 1 = alnum (6 bits/char)
- *   serial width  2 bits    0 = none, 1 = 8-bit, 2 = 16-bit, 3 = 32-bit
- *   text length   4 bits    1..15
- *   text          L * (5 or 6) bits
- *   serial        W bits
- *   ------------------------------------------------------------------
- *   header        10 bits
+ * Universal (bit 0 = 0):
+ *   type            1 bit   0
+ *   text alphabet   1 bit   0 = A-Z (5 bits/char), 1 = alnum (6 bits/char)
+ *   text length     4 bits  1..15
+ *   text            L * (5 or 6) bits
+ *   header total    6 bits
  *
- * The alphabet is "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_ ." (40 symbols).
- * Pure uppercase text automatically uses the 5-bit alphabet, which is why
- * "CONFIDENTIAL" (12 chars) fits in BCH_3 only when numbering is disabled:
- *   10 + 12*5 = 70 <= 75, while 70 + 8 = 78 > 75.
+ * Batch (bit 0 = 1):
+ *   type            1 bit   1
+ *   batch code      20 bits 4 letters, each A-Z = 0..25, 5 bits
+ *   serial          12 bits 1..4095
+ *   CRC-7           7 bits  CRC-7/MMC over the first 33 bits
+ *   total           40 bits  always BCH_SUPER
  *
- * The UI must never claim that arbitrary text "just works": [plan] computes the
- * exact budget and [validateBatch] checks the numbering range before a batch
- * starts. The native layer double-checks the capacity again.
+ * The batch code + 12-bit serial combination is unique. A single batch can
+ * therefore hold at most 4095 images. There is deliberately no serial field in
+ * the universal frame: a fixed text is self-contained and needs no numbering.
+ *
+ * The UI must never claim arbitrary text fits; [planUniversal] computes the
+ * exact budget. [validateBatch] is the final gate before WorkManager starts.
  */
 object PayloadCodec {
 
-    const val HEADER_BITS = 10
     const val MAX_TEXT_LENGTH = 15
-    const val MAGIC_BITS = "101"
+    const val UNIVERSAL_HEADER_BITS = 6
+    const val BATCH_HEADER_BITS = 1
+    const val BATCH_CODE_BITS = 20
+    const val BATCH_CODE_LENGTH = 4
+    const val BATCH_SERIAL_BITS = 12
+    const val BATCH_CRC_BITS = 7
+    const val BATCH_TOTAL_BITS = 40
+    const val MAX_BATCH_SERIAL = 4095
 
     /** 26 letters + 10 digits + '-', '_', '.', ' ' = 40 values, exactly 6 bits. */
     const val ALNUM_ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_ ."
+
+    private val BATCH_CODE_REGEX = Regex("[A-Z]{4}")
 
     enum class TextMode(val label: String, val bitsPerChar: Int) {
         ALPHA("纯大写字母", 5),
         ALNUM("字母/数字/符号", 6),
     }
 
-    enum class FrameFormat(val label: String) {
-        TMK2("TMK2 帧"),
-        RAW_ASCII7("原始 7-bit ASCII"),
-        RAW_ASCII8("原始 8-bit ASCII"),
-        RAW_BINARY("原始二进制"),
-        INVALID("无效 payload"),
+    enum class FrameType(val label: String) {
+        UNIVERSAL("通用"),
+        BATCH("批次"),
     }
 
     data class PayloadPlan(
         val valid: Boolean,
-        val text: String,
-        val textMode: TextMode,
-        val serial: Long?,
-        val serialWidth: SerialWidth,
-        val autoNumber: Boolean,
+        val frameType: FrameType,
+        val text: String = "",
+        val textMode: TextMode = TextMode.ALPHA,
+        val batchId: String? = null,
+        val serial: Int? = null,
         val headerBits: Int,
-        val textBits: Int,
-        val serialBits: Int,
+        val textBits: Int = 0,
+        val serialBits: Int = 0,
+        val crcBits: Int = 0,
         val totalBits: Int,
         val capacityBits: Int,
         val remainingBits: Int,
-        val maxAlphaLength: Int,
-        val maxAlnumLength: Int,
-        val error: String?,
+        val maxAlphaLength: Int = 0,
+        val maxAlnumLength: Int = 0,
+        val crc7: Int? = null,
+        val error: String? = null,
     )
 
     data class EncodedFrame(
@@ -83,10 +89,15 @@ object PayloadCodec {
     )
 
     data class DecodedFrame(
-        val text: String?,
-        val serial: Long?,
-        val format: FrameFormat,
+        val valid: Boolean,
+        val frameType: FrameType?,
+        val text: String? = null,
+        val batchId: String? = null,
+        val serial: Int? = null,
+        val crc7: Int? = null,
+        val crcValid: Boolean = false,
         val note: String? = null,
+        val error: String? = null,
     )
 
     /**
@@ -107,89 +118,53 @@ object PayloadCodec {
 
     fun prepareText(raw: String): String = sanitizeInput(raw).trim()
 
-    fun plan(
-        text: String,
-        autoNumber: Boolean,
-        serialWidth: SerialWidth,
-        serial: Long?,
-        ecc: EccLevel,
-    ): PayloadPlan {
+    // --------------------------------------------------------------- universal
+
+    fun planUniversal(text: String, ecc: EccLevel): PayloadPlan {
         val prepared = prepareText(text)
-        val effectiveWidth = if (autoNumber) serialWidth else SerialWidth.NONE
         val mode = if (prepared.isNotEmpty() && prepared.all { it in 'A'..'Z' }) {
             TextMode.ALPHA
         } else {
             TextMode.ALNUM
         }
-
-        val textChars = prepared.length
-        val textBits = textChars * mode.bitsPerChar
-        val serialBits = effectiveWidth.bits
-        val total = HEADER_BITS + textBits + serialBits
+        val textBits = prepared.length * mode.bitsPerChar
+        val total = UNIVERSAL_HEADER_BITS + textBits
         val remaining = ecc.dataBits - total
 
-        val textError = when {
-            prepared.isEmpty() -> "请输入至少 1 个字符（A–Z、0–9、空格、- _ .）"
-            textChars > MAX_TEXT_LENGTH -> "文本最多 $MAX_TEXT_LENGTH 个字符，当前 $textChars 个"
+        val error = when {
+            prepared.isEmpty() ->
+                "请输入至少 1 个字符（A–Z、0–9、空格、- _ .）"
+            prepared.length > MAX_TEXT_LENGTH ->
+                "文本最多 $MAX_TEXT_LENGTH 个字符，当前 ${prepared.length} 个"
+            total > ecc.dataBits ->
+                "需要 $total 位，但 ${ecc.wireName} 只有 ${ecc.dataBits} 位；请缩短文本或选择容量更大的纠错等级"
             else -> null
         }
-
-        val serialError = when {
-            effectiveWidth != SerialWidth.NONE && serial == null ->
-                "自动编号已开启，但起始编号为空"
-            effectiveWidth != SerialWidth.NONE && serial != null && (serial < 0 || serial > effectiveWidth.maxValue) ->
-                "编号 $serial 超出 ${effectiveWidth.label} 范围"
-            else -> null
-        }
-
-        val capacityError = if (total > ecc.dataBits) {
-            "需要 $total 位，但 ${ecc.wireName} 只有 ${ecc.dataBits} 位；请缩短文本、改用更小编号位宽或选择容量更大的纠错等级"
-        } else {
-            null
-        }
-
-        val error = textError ?: serialError ?: capacityError
 
         return PayloadPlan(
             valid = error == null,
+            frameType = FrameType.UNIVERSAL,
             text = prepared,
             textMode = mode,
-            serial = if (effectiveWidth == SerialWidth.NONE) null else serial,
-            serialWidth = effectiveWidth,
-            autoNumber = autoNumber && effectiveWidth != SerialWidth.NONE,
-            headerBits = HEADER_BITS,
+            headerBits = UNIVERSAL_HEADER_BITS,
             textBits = textBits,
-            serialBits = serialBits,
             totalBits = total,
             capacityBits = ecc.dataBits,
             remainingBits = remaining,
-            maxAlphaLength = maxTextLength(ecc, effectiveWidth, TextMode.ALPHA),
-            maxAlnumLength = maxTextLength(ecc, effectiveWidth, TextMode.ALNUM),
+            maxAlphaLength = maxTextLength(ecc, TextMode.ALPHA),
+            maxAlnumLength = maxTextLength(ecc, TextMode.ALNUM),
             error = error,
         )
     }
 
-    /**
-     * Build the frame bits. The result length is <= [EccLevel.dataBits]; the
-     * native TrustMark library adds BCH parity and the schema bits itself.
-     */
-    fun encode(
-        text: String,
-        autoNumber: Boolean,
-        serialWidth: SerialWidth,
-        serial: Long?,
-        ecc: EccLevel,
-    ): EncodedFrame {
-        val plan = plan(text, autoNumber, serialWidth, serial, ecc)
+    fun encodeUniversal(text: String, ecc: EccLevel): EncodedFrame {
+        val plan = planUniversal(text, ecc)
         require(plan.valid) { plan.error ?: "payload 不合法" }
 
-        val width = plan.serialWidth
         val bits = buildString(plan.totalBits) {
-            append(MAGIC_BITS)
+            append('0')
             append(if (plan.textMode == TextMode.ALNUM) '1' else '0')
-            append(width.code.toBitString(2))
             append(plan.text.length.toBitString(4))
-
             for (ch in plan.text) {
                 if (plan.textMode == TextMode.ALPHA) {
                     append((ch - 'A').toBitString(5))
@@ -199,165 +174,208 @@ object PayloadCodec {
                     append(index.toBitString(6))
                 }
             }
-
-            if (width != SerialWidth.NONE) {
-                val value = requireNotNull(plan.serial) { "缺少编号" }
-                require(value in 0..width.maxValue) { "编号越界" }
-                append(value.toString(2).padStart(width.bits, '0').takeLast(width.bits))
-            }
         }
-
-        check(bits.length == plan.totalBits) {
-            "帧长度计算错误：${bits.length} != ${plan.totalBits}"
-        }
-        check(bits.length <= ecc.dataBits) {
-            "帧长度 ${bits.length} 超出 ${ecc.wireName} 的 ${ecc.dataBits} 位"
-        }
+        check(bits.length == plan.totalBits)
+        check(bits.length <= ecc.dataBits)
         return EncodedFrame(bits, plan)
     }
 
+    // ------------------------------------------------------------------- batch
+
+    fun normalizeBatchCode(raw: String): String = raw.trim().uppercase(Locale.US)
+
+    fun isValidBatchCode(raw: String): Boolean = BATCH_CODE_REGEX.matches(normalizeBatchCode(raw))
+
+    fun planBatch(batchId: String, serial: Int, ecc: EccLevel): PayloadPlan {
+        val code = normalizeBatchCode(batchId)
+        val crc = crc7(batchHeaderAndBody(code, serial))
+
+        val error = when {
+            !isValidBatchCode(code) -> "批次短码必须是 4 个字母 A–Z"
+            serial !in 1..MAX_BATCH_SERIAL -> "编号必须在 1–$MAX_BATCH_SERIAL 之间"
+            ecc != EccLevel.BCH_SUPER ->
+                "批次帧固定 40 位，必须使用 BCH Super（当前 ${ecc.wireName}）"
+            else -> null
+        }
+
+        return PayloadPlan(
+            valid = error == null,
+            frameType = FrameType.BATCH,
+            batchId = code,
+            serial = serial,
+            headerBits = BATCH_HEADER_BITS,
+            serialBits = BATCH_SERIAL_BITS,
+            crcBits = BATCH_CRC_BITS,
+            totalBits = BATCH_TOTAL_BITS,
+            capacityBits = ecc.dataBits,
+            remainingBits = ecc.dataBits - BATCH_TOTAL_BITS,
+            crc7 = crc,
+            error = error,
+        )
+    }
+
+    fun encodeBatch(batchId: String, serial: Int, ecc: EccLevel = EccLevel.BCH_SUPER): EncodedFrame {
+        val plan = planBatch(batchId, serial, ecc)
+        require(plan.valid) { plan.error ?: "批次 payload 不合法" }
+        val code = requireNotNull(plan.batchId)
+        val value = requireNotNull(plan.serial)
+        val body = batchHeaderAndBody(code, value)
+        val bits = body + requireNotNull(plan.crc7).toBitString(BATCH_CRC_BITS)
+        check(bits.length == BATCH_TOTAL_BITS)
+        return EncodedFrame(bits, plan)
+    }
+
+    private fun batchHeaderAndBody(batchId: String, serial: Int): String = buildString(33) {
+        append('1')
+        for (ch in batchId) append((ch - 'A').toBitString(5))
+        append(serial.toBitString(BATCH_SERIAL_BITS))
+    }
+
     /**
-     * Reverse a decoded TrustMark payload.
-     *
-     * Payloads that do not begin with our magic bits are not an error: they may
-     * be produced by another TrustMark tool. In that case we make a best-effort
-     * 7/8-bit ASCII interpretation and otherwise show raw bits only.
+     * CRC-7/MMC (SD/eMMC command CRC): polynomial x^7 + x^3 + 1, init 0x00,
+     * no reflection, no final XOR. This is the standard 8-bit-register form:
+     * the seven-bit register is shifted through an implicit x^7 term (0x89),
+     * with seven zero bits appended at the end; the low seven bits are the
+     * remainder. The check value for "123456789" is 0x75.
+     */
+    fun crc7(bits: String): Int {
+        var crc = 0
+        for (bit in bits + "0000000") {
+            require(bit == '0' || bit == '1') { "CRC 输入必须是 0/1" }
+            crc = (crc shl 1) or (bit - '0')
+            if (crc and 0x80 != 0) crc = crc xor 0x89
+            crc = crc and 0xFF
+        }
+        return crc and 0x7F
+    }
+
+    // ------------------------------------------------------------------ decode
+
+    /**
+     * Auto-dispatch on bit 0. There is no loose ASCII fallback: the decoder only
+     * accepts the two v1.2 frames, and a batch frame with a bad CRC is an error.
+     * v1.1 TMK2 frames (magic 101) begin with 1 and therefore fail CRC, which is
+     * intentional: old and new payloads are not silently mixed.
      */
     fun decode(bits: String): DecodedFrame {
         val normalized = bits.filter { it == '0' || it == '1' }
         if (normalized.length != bits.length || normalized.isEmpty()) {
-            return DecodedFrame(null, null, FrameFormat.INVALID, "payload 含非 0/1 字符或为空")
+            return DecodedFrame(
+                valid = false,
+                frameType = null,
+                error = "payload 含非 0/1 字符或为空",
+            )
         }
-
-        if (normalized.length >= HEADER_BITS && normalized.startsWith(MAGIC_BITS)) {
-            parseFrame(normalized)?.let { return it }
+        return if (normalized[0] == '0') {
+            decodeUniversal(normalized)
+        } else {
+            decodeBatch(normalized)
         }
-
-        decodeLooseText(normalized)?.let { return it }
-        return DecodedFrame(
-            text = null,
-            serial = null,
-            format = FrameFormat.RAW_BINARY,
-            note = "非 TMK2 帧，未找到可读文本；原始二进制已保留",
-        )
     }
 
-    private fun parseFrame(bits: String): DecodedFrame? {
-        var cursor = MAGIC_BITS.length
-        if (bits.length < HEADER_BITS) return null
+    private fun decodeUniversal(bits: String): DecodedFrame {
+        if (bits.length < UNIVERSAL_HEADER_BITS) {
+            return DecodedFrame(false, FrameType.UNIVERSAL, error = "通用帧头不足 6 位")
+        }
+        val mode = if (bits[1] == '1') TextMode.ALNUM else TextMode.ALPHA
+        val length = bits.substring(2, 6).toInt(2)
+        if (length !in 1..MAX_TEXT_LENGTH) {
+            return DecodedFrame(false, FrameType.UNIVERSAL, error = "通用帧文本长度非法：$length")
+        }
+        val required = UNIVERSAL_HEADER_BITS + length * mode.bitsPerChar
+        if (required > bits.length) {
+            return DecodedFrame(false, FrameType.UNIVERSAL, error = "通用帧被截断")
+        }
 
-        val mode = if (bits[cursor++] == '1') TextMode.ALNUM else TextMode.ALPHA
-        val widthCode = bits.substring(cursor, cursor + 2).toInt(2)
-        cursor += 2
-        val width = SerialWidth.fromCode(widthCode) ?: return null
-        val textLength = bits.substring(cursor, cursor + 4).toInt(2)
-        cursor += 4
-
-        if (textLength <= 0 || textLength > MAX_TEXT_LENGTH) return null
-
-        val required = HEADER_BITS + textLength * mode.bitsPerChar + width.bits
-        if (required > bits.length) return null
-
-        val text = StringBuilder(textLength)
-        repeat(textLength) {
-            val charBits = bits.substring(cursor, cursor + mode.bitsPerChar)
+        val text = StringBuilder(length)
+        var cursor = UNIVERSAL_HEADER_BITS
+        repeat(length) {
+            val code = bits.substring(cursor, cursor + mode.bitsPerChar).toInt(2)
             cursor += mode.bitsPerChar
             if (mode == TextMode.ALPHA) {
-                val code = charBits.toInt(2)
-                if (code !in 0..25) return null
+                if (code !in 0..25) {
+                    return DecodedFrame(false, FrameType.UNIVERSAL, error = "通用帧字母编码非法")
+                }
                 text.append('A' + code)
             } else {
-                val code = charBits.toInt(2)
-                if (code !in ALNUM_ALPHABET.indices) return null
+                if (code !in ALNUM_ALPHABET.indices) {
+                    return DecodedFrame(false, FrameType.UNIVERSAL, error = "通用帧字符编码非法")
+                }
                 text.append(ALNUM_ALPHABET[code])
             }
         }
-
-        val serial = if (width == SerialWidth.NONE) {
-            null
-        } else {
-            val serialBits = bits.substring(cursor, cursor + width.bits)
-            java.lang.Long.parseLong(serialBits, 2)
-        }
-
         return DecodedFrame(
+            valid = true,
+            frameType = FrameType.UNIVERSAL,
             text = text.toString(),
-            serial = serial,
-            format = FrameFormat.TMK2,
-            note = null,
+            note = "通用模式：${mode.label}",
         )
     }
 
-    private fun decodeLooseText(bits: String): DecodedFrame? {
-        for (width in intArrayOf(7, 8)) {
-            val usable = bits.length - (bits.length % width)
-            if (usable < width * 2) continue
+    private fun decodeBatch(bits: String): DecodedFrame {
+        if (bits.length < BATCH_TOTAL_BITS) {
+            return DecodedFrame(
+                valid = false,
+                frameType = FrameType.BATCH,
+                error = "批次帧不足 40 位（实际 ${bits.length} 位）",
+            )
+        }
+        val body = bits.substring(0, 33)
+        val actual = bits.substring(33, 40).toInt(2)
+        val expected = crc7(body)
+        if (actual != expected) {
+            return DecodedFrame(
+                valid = false,
+                frameType = FrameType.BATCH,
+                crc7 = actual,
+                crcValid = false,
+                error = "CRC-7 校验失败（期望 ${expected.toString(2).padStart(7, '0')}，实际 ${actual.toString(2).padStart(7, '0')}）",
+            )
+        }
 
-            val chars = ArrayList<Char>(usable / width)
-            var index = 0
-            while (index + width <= bits.length) {
-                chars += bits.substring(index, index + width).toInt(2).toChar()
-                index += width
-            }
-
-            // Upstream text mode pads with zeros; stop at the first NUL.
-            val text = chars.takeWhile { it != '\u0000' }.joinToString("")
-            if (text.length < 2) continue
-            val printable = text.count { it.code in 32..126 }
-            val alnum = text.count { it.isLetterOrDigit() }
-            if (printable.toDouble() / text.length >= 0.95 && alnum >= 2) {
-                return DecodedFrame(
-                    text = text.trim(),
-                    serial = null,
-                    format = if (width == 7) FrameFormat.RAW_ASCII7 else FrameFormat.RAW_ASCII8,
-                    note = "非 TMK2 帧，按原始 ASCII 尽力解读",
-                )
+        val code = buildString(BATCH_CODE_LENGTH) {
+            var cursor = 1
+            repeat(BATCH_CODE_LENGTH) {
+                val value = bits.substring(cursor, cursor + 5).toInt(2)
+                cursor += 5
+                if (value !in 0..25) return DecodedFrame(false, FrameType.BATCH, error = "批次短码编码非法")
+                append('A' + value)
             }
         }
-        return null
+        val serial = bits.substring(21, 33).toInt(2)
+        if (serial !in 1..MAX_BATCH_SERIAL) {
+            return DecodedFrame(
+                valid = false,
+                frameType = FrameType.BATCH,
+                batchId = code,
+                crc7 = actual,
+                crcValid = true,
+                error = "批次编号非法：$serial",
+            )
+        }
+        return DecodedFrame(
+            valid = true,
+            frameType = FrameType.BATCH,
+            batchId = code,
+            serial = serial,
+            crc7 = actual,
+            crcValid = true,
+        )
     }
 
-    /**
-     * Batch numbering validation happens before WorkManager is enqueued.
-     * Overflow-safe: no multiplication occurs until the span is proven to fit.
-     */
-    fun validateBatch(
-        start: Long,
-        step: Long,
-        width: SerialWidth,
-        count: Int,
-    ): String? {
-        if (width == SerialWidth.NONE || count <= 0) return null
-        if (start < 0) return "起始编号不能为负数"
-        if (step <= 0) return "步长必须大于 0"
-        if (start > width.maxValue) {
-            return "起始编号 $start 超出 ${width.label}"
-        }
-        if (count > 1) {
-            val steps = (count - 1).toLong()
-            if (step > (width.maxValue - start) / steps) {
-                return "本批次编号范围超出 ${width.label}；请减小起始编号、步长或数量"
-            }
-        }
-        return null
-    }
-
-    fun serialForIndex(start: Long, step: Long, index: Int): Long = start + step * index.toLong()
+    // --------------------------------------------------------------- validation
 
     /**
-     * 生成前的最终闸门：扁平任务列表里每一个 payload 都必须与所选 BCH 容量
-     * 和编号位宽一致。任何一项失败都会阻止整批，而不是只跳过该任务。
-     *
-     * 这里重新解析 payload，而不是相信 UI 传来的长度，避免编号位宽、文本和
-     * 容量在校验后被意外改动。
+     * Final gate before WorkManager starts. Re-parses every payload instead of
+     * trusting the UI, so an accidental frame/capacity edit cannot slip through.
      */
     fun validateBatch(tasks: List<GenerateTask>): String? {
         if (tasks.isEmpty()) return "任务列表为空，无法开始生成"
         for (task in tasks) {
             val ecc = EccLevel.fromWireName(task.eccWireName)
                 ?: return "未知的 BCH 等级：${task.eccWireName}"
-            if (task.serial <= 0) {
-                return "编号必须从 1 开始：${task.sourceDisplayName}"
+            if (task.strength !in 0.5f..2.0f) {
+                return "强度必须在 0.50–2.00 之间：${task.outputFileName}"
             }
             if (task.payloadBits.isEmpty()) {
                 return "payload 为空：${task.outputFileName}"
@@ -367,19 +385,43 @@ object PayloadCodec {
                     "只有 ${ecc.dataBits} 位：${task.outputFileName}"
             }
             val frame = decode(task.payloadBits)
-            if (frame.format != FrameFormat.TMK2) {
-                return "payload 不是 TMK2 帧：${task.outputFileName}"
+            if (!frame.valid) {
+                return "payload 校验失败：${frame.error.orEmpty()}（${task.outputFileName}）"
             }
-            if (frame.serial == null || frame.serial != task.serial.toLong()) {
-                return "编号与 payload 不一致：${task.outputFileName}"
+            when (task.frameType) {
+                FrameType.UNIVERSAL -> {
+                    if (frame.frameType != FrameType.UNIVERSAL) {
+                        return "帧类型与任务不一致：${task.outputFileName}"
+                    }
+                    if (task.serial != 0 || task.batchId.isNotBlank()) {
+                        return "通用任务不应带批次或编号：${task.outputFileName}"
+                    }
+                }
+                FrameType.BATCH -> {
+                    if (frame.frameType != FrameType.BATCH) {
+                        return "帧类型与任务不一致：${task.outputFileName}"
+                    }
+                    if (!frame.crcValid) {
+                        return "批次 CRC-7 无效：${task.outputFileName}"
+                    }
+                    if (frame.batchId != task.batchId) {
+                        return "批次短码与 payload 不一致：${task.outputFileName}"
+                    }
+                    if (frame.serial != task.serial) {
+                        return "编号与 payload 不一致：${task.outputFileName}"
+                    }
+                    if (ecc != EccLevel.BCH_SUPER) {
+                        return "批次帧必须使用 BCH Super：${task.outputFileName}"
+                    }
+                }
             }
         }
         return null
     }
 
-    fun maxTextLength(ecc: EccLevel, width: SerialWidth, mode: TextMode): Int {
+    fun maxTextLength(ecc: EccLevel, mode: TextMode): Int {
         for (length in MAX_TEXT_LENGTH downTo 1) {
-            if (HEADER_BITS + length * mode.bitsPerChar + width.bits <= ecc.dataBits) {
+            if (UNIVERSAL_HEADER_BITS + length * mode.bitsPerChar <= ecc.dataBits) {
                 return length
             }
         }
@@ -389,12 +431,8 @@ object PayloadCodec {
     fun binaryGroups(bits: String, groupSize: Int = 4): String =
         bits.chunked(groupSize).joinToString(" ")
 
-    fun capacitySummary(ecc: EccLevel): String = when (ecc) {
-        EccLevel.BCH_5 -> "61 位 → 约 2.3×10¹⁸ 种标识符"
-        EccLevel.BCH_3 -> "75 位 → 约 3.8×10²² 种标识符"
-        EccLevel.BCH_4 -> "68 位 → 约 2.95×10²⁰ 种标识符"
-        EccLevel.BCH_SUPER -> "40 位 → 约 1.1×10¹² 种标识符"
-    }
+    fun capacitySummary(ecc: EccLevel): String =
+        "帧上限 ${ecc.dataBits} 位，批次帧固定 40 位（BCH Super）"
 
     private fun Int.toBitString(width: Int): String =
         toString(2).padStart(width, '0').takeLast(width)

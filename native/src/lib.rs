@@ -175,7 +175,9 @@ pub extern "system" fn Java_com_trustmarktool_nativebridge_TrustMarkNative_nativ
         let image = apply_orientation(image, orientation);
 
         let watermarked = engine
-            .encode_with_version(payload, image, strength.clamp(0.0, 1.0), version)
+            // v1.2 batch strength is user-adjustable up to 2.0. The Rust
+            // library accepts >1.0; keep the same bound at the JNI boundary.
+            .encode_with_version(payload, image, strength.clamp(0.0, 2.0), version)
             .map_err(|error| format!("TrustMark 编码失败: {error}"))?;
 
         encode_output(watermarked, &bytes)

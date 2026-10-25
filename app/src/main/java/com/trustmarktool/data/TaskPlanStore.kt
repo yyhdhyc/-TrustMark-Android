@@ -3,6 +3,7 @@ package com.trustmarktool.data
 import android.content.Context
 import com.trustmarktool.model.GenerateTask
 import com.trustmarktool.model.GenerateTaskStatus
+import com.trustmarktool.model.PayloadCodec
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
@@ -29,11 +30,13 @@ object TaskPlanStore {
                     put("sourceUri", task.sourceUri)
                     put("sourceDisplayName", task.sourceDisplayName)
                     put("sourceMimeType", task.sourceMimeType ?: JSONObject.NULL)
+                    put("frameType", task.frameType.name)
                     put("serial", task.serial)
                     put("payloadBits", task.payloadBits)
                     put("outputStem", task.outputStem)
                     put("outputFileName", task.outputFileName)
                     put("eccWireName", task.eccWireName)
+                    put("strength", task.strength.toDouble())
                     put("status", task.status.name)
                     put("error", task.error ?: JSONObject.NULL)
                 },
@@ -61,11 +64,15 @@ object TaskPlanStore {
                         sourceUri = obj.getString("sourceUri"),
                         sourceDisplayName = obj.optString("sourceDisplayName", "image.jpg"),
                         sourceMimeType = obj.optString("sourceMimeType").takeIf { it.isNotBlank() },
+                        frameType = runCatching {
+                            PayloadCodec.FrameType.valueOf(obj.optString("frameType", "UNIVERSAL"))
+                        }.getOrDefault(PayloadCodec.FrameType.UNIVERSAL),
                         serial = obj.getInt("serial"),
                         payloadBits = obj.getString("payloadBits"),
                         outputStem = obj.getString("outputStem"),
                         outputFileName = obj.getString("outputFileName"),
                         eccWireName = obj.optString("eccWireName", "BCH_5"),
+                        strength = obj.optDouble("strength", 0.95).toFloat(),
                         status = runCatching {
                             GenerateTaskStatus.valueOf(obj.optString("status", "PENDING"))
                         }.getOrDefault(GenerateTaskStatus.PENDING),

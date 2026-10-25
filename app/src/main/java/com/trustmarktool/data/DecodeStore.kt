@@ -18,10 +18,13 @@ object DecodeStore {
             array.put(
                 JSONObject().apply {
                     put("fileName", record.fileName)
+                    put("frameType", record.frameType ?: JSONObject.NULL)
                     put("decodedText", record.decodedText ?: JSONObject.NULL)
+                    put("batchId", record.batchId ?: JSONObject.NULL)
                     put("serial", record.serial ?: JSONObject.NULL)
+                    put("batchName", record.batchName ?: JSONObject.NULL)
+                    put("recipient", record.recipient ?: JSONObject.NULL)
                     put("payloadBits", record.payloadBits)
-                    put("format", record.format)
                     put("ecc", record.ecc ?: JSONObject.NULL)
                     put("confidence", record.confidence.toDouble())
                     put("bitflips", record.bitflips)
@@ -51,10 +54,13 @@ object DecodeStore {
                     add(
                         DecodeRecord(
                             fileName = item.optString("fileName"),
+                            frameType = item.optStringOrNull("frameType"),
                             decodedText = item.optStringOrNull("decodedText"),
-                            serial = item.optLongOrNull("serial"),
+                            batchId = item.optStringOrNull("batchId"),
+                            serial = item.optIntOrNull("serial"),
+                            batchName = item.optStringOrNull("batchName"),
+                            recipient = item.optStringOrNull("recipient"),
                             payloadBits = item.optString("payloadBits"),
-                            format = item.optString("format"),
                             ecc = item.optStringOrNull("ecc"),
                             confidence = item.optDouble("confidence", 0.0).toFloat(),
                             bitflips = item.optInt("bitflips"),
@@ -76,8 +82,8 @@ object DecodeStore {
         return value.ifBlank { null }
     }
 
-    private fun JSONObject.optLongOrNull(key: String): Long? {
-        if (isNull(key)) return null
-        return if (has(key)) optLong(key) else null
+    private fun JSONObject.optIntOrNull(key: String): Int? {
+        if (isNull(key) || !has(key)) return null
+        return optInt(key)
     }
 }

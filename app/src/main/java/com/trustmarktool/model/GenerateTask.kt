@@ -8,19 +8,25 @@ enum class GenerateTaskStatus {
 }
 
 /**
- * 扁平任务模型。编号按源图独立：同一 sourceUri 的副本 serial 从 1 到 N。
- * outputFileName 已包含 tm_b{batch}_n{serial} 标记，Worker 不再计算文件名。
+ * Flat task model. A universal task has batchId="" and serial=0; a batch task
+ * carries its 4-letter batch code and 1..4095 serial. The output name is
+ * decided before WorkManager starts, so the worker never re-derives numbering.
+ *
+ * strength is stored per task because batch mode exposes an adjustable value
+ * (0.50–2.00); universal mode keeps the historical 0.95 default.
  */
 data class GenerateTask(
     val batchId: String,
     val sourceUri: String,
     val sourceDisplayName: String,
     val sourceMimeType: String?,
+    val frameType: PayloadCodec.FrameType,
     val serial: Int,
     val payloadBits: String,
     val outputStem: String,
     val outputFileName: String,
     val eccWireName: String,
+    val strength: Float,
     val status: GenerateTaskStatus = GenerateTaskStatus.PENDING,
     val error: String? = null,
 )

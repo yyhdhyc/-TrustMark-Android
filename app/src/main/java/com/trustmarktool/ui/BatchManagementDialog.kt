@@ -339,7 +339,7 @@ private fun CreateBatchCard(
                 value = recipients,
                 onValueChange = { recipients = it },
                 label = { Text("接收人，每行一个") },
-                supportingText = { Text("按输入顺序自动分配编号 1..N，最多 99 位") },
+                supportingText = { Text("按输入顺序自动分配编号 1..N，最多 4095 位（12 位编号）") },
                 minLines = 3,
                 modifier = Modifier.fillMaxWidth(),
             )
