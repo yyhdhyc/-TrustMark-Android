@@ -23,3 +23,15 @@ keystore.properties
 .rust/
 .tmp/
 .temp/
+
+# AI/tooling artifacts (not part of the project)
+.cc-safety-net/
+dist/*.apk
+
+# Signing material (privacy: never upload)
+keystore/
+*.jks
+*.keystore
+keystore.properties
+*.pem
+*.p12
