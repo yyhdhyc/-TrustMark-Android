@@ -71,10 +71,26 @@ fn encode_output(image: DynamicImage, original: &[u8]) -> Result<Vec<u8>, String
     let is_jpeg = original.starts_with(&[0xFF, 0xD8]);
 
     if is_png || !is_jpeg {
+        // apply_residual() returns a floating point image (Rgba32F for alpha,
+        // Rgb32F otherwise). The PNG encoder supports 8/16-bit channels, not
+        // 32-bit float, so convert to 8-bit before writing. This is why every
+        // PNG failed while JPEG (which already converts to Rgb8) worked.
+        let png_image = if image.color().has_alpha() {
+            DynamicImage::ImageRgba8(image.to_rgba8())
+        } else {
+            DynamicImage::ImageRgb8(image.to_rgb8())
+        };
         let mut cursor = Cursor::new(Vec::new());
-        image
+        png_image
             .write_to(&mut cursor, ImageFormat::Png)
-            .map_err(|error| format!("PNG 编码失败: {error}"))?;
+            .map_err(|error| {
+                format!(
+                    "PNG 编码失败（color={:?}, {}x{}）: {error}",
+                    png_image.color(),
+                    png_image.width(),
+                    png_image.height()
+                )
+            })?;
         return Ok(cursor.into_inner());
     }
 

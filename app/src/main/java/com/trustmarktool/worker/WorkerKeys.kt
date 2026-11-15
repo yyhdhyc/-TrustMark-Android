@@ -18,6 +18,7 @@ object WorkerKeys {
     const val RESULT_COUNT = "result_count"
     const val FAILED_COUNT = "failed_count"
     const val SUMMARY = "summary"
+    const val DETAILS = "details"
     const val STATE = "task_state"
 
     const val UNIQUE_ENCODE = "trustmark_encode_batch"

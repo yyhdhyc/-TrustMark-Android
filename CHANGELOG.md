@@ -2,6 +2,37 @@
 
 本项目遵循 [Semantic Versioning](https://semver.org/lang/zh-CN/)；版本号与 `app/build.gradle.kts` 的 `versionName` 保持一致。
 
+## v1.2.1 — 2026-11-08
+
+v1.2.1 是 v1.2.0 的兼容性修复与交互完善版本，payload 帧结构、包名和部署层不变。
+
+### 修复
+
+- **PNG 生成失败**：`native/src/lib.rs` 的 PNG 分支此前把 `ImageRgba32F`/`ImageRgb32F` 直接交给 PNG 编码器；现按是否有 alpha 转为 `Rgba8`/`Rgb8` 后再写入，透明通道保留。
+- **批量失败原因不可见**：单张图片异常现在记录“源文件名 -> 输出文件名: 原因”，最多汇总 8 条/4096 字符，随任务终态传到 UI；单张失败不再中断整批。
+
+### 新增
+
+- 生成参数持久化：固定文本、当前批次、通用/批次模式写入 `SharedPreferences`，启动时恢复。
+- BCH 下拉按纠错能力从低到高排列：BCH 3 / 4 / 5 / Super；每项两行显示数据位数与可纠位数。
+- 生成页与解密页共用 `TaskProgressCard`：运行中显示转圈、取消、进度和当前文件；完成/取消/失败不再显示运行态元素。
+- 应用版本：`versionCode 4`、`versionName 1.2.1`。
+
+### 验证
+
+- `:app:testDebugUnitTest`：17/17 通过。
+- `:app:lintDebug`：0 error / 8 warning。
+- Debug APK：`dist/TrustMarkTool-1.2.1-debug.apk`，38,707,624 bytes，v2 签名。
+- SHA-256：`d9ae088b9adb7e77dd87576dda8738ae4c195f2d09d2c04eed21d489748fb773`。
+- 两个 ABI 的 `libtrustmark_jni.so` 已用 Rust 1.88.0 + NDK r27b 重新编译；LOAD 对齐 16 KB。
+- **未在物理设备上验证 PNG、JNI、ONNX Runtime、模型推理与 MediaStore 读写。**
+
+### 已知限制
+
+- 批次导出仍导出全部批次记录，而非仅当前选中批次。
+- 首次启动仍需联网下载约 64.7 MB 的 Q 模型。
+- 卸载应用会丢失加密映射表；需定期导出备份。
+
 ## v1.2.0 — 2026-10-25
 
 v1.2.0 将“通用文本”和“批次溯源”拆成两种自描述 payload，并移除手动溯源页。

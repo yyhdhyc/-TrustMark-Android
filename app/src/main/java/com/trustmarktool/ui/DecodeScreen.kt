@@ -63,6 +63,7 @@ import com.trustmarktool.model.MainUiState
 import com.trustmarktool.model.PayloadCodec
 import com.trustmarktool.model.TaskProgress
 import com.trustmarktool.model.TaskState
+import com.trustmarktool.ui.components.TaskProgressCard
 import java.util.Locale
 
 private val SuccessGreen = Color(0xFF2E7D32)
@@ -130,7 +131,7 @@ fun DecodeScreen(
         }
 
         decode.task?.let { task ->
-            item { DecodeTaskCard(task = task, onCancel = viewModel::cancelDecode) }
+            item { TaskProgressCard(task = task, onCancel = viewModel::cancelDecode) }
         }
 
         decode.lastSummary?.let { summary ->
@@ -264,78 +265,6 @@ private fun DecodePickerCard(
                         Spacer(Modifier.width(4.dp))
                         Text("清空")
                     }
-                }
-            }
-        }
-    }
-}
-
-@Composable
-private fun DecodeTaskCard(task: TaskProgress, onCancel: () -> Unit) {
-    val (title, icon) = when (task.state) {
-        TaskState.RUNNING -> "正在处理中" to null
-        TaskState.COMPLETED -> "处理完成" to Icons.Outlined.CheckCircle
-        TaskState.CANCELLED -> "已取消" to Icons.Outlined.Stop
-        TaskState.ERROR -> "处理失败" to Icons.Outlined.ErrorOutline
-    }
-    Card(
-        shape = RoundedCornerShape(16.dp),
-        colors = CardDefaults.cardColors(
-            containerColor = if (task.state == TaskState.ERROR) {
-                MaterialTheme.colorScheme.errorContainer
-            } else {
-                MaterialTheme.colorScheme.secondaryContainer
-            },
-        ),
-    ) {
-        Column(
-            Modifier.padding(14.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp),
-        ) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                when {
-                    task.state == TaskState.RUNNING -> {
-                        CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp)
-                        Spacer(Modifier.width(8.dp))
-                    }
-                    icon != null -> {
-                        Icon(icon, contentDescription = null)
-                        Spacer(Modifier.width(8.dp))
-                    }
-                }
-                Text(title, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
-                Spacer(Modifier.weight(1f))
-                Text(
-                    if (task.total > 0) "${task.completed}/${task.total}" else "",
-                    style = MaterialTheme.typography.labelLarge,
-                )
-            }
-
-            if (task.state == TaskState.RUNNING) {
-                if (task.indeterminate) {
-                    LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
-                } else {
-                    LinearProgressIndicator(progress = { task.fraction }, modifier = Modifier.fillMaxWidth())
-                }
-                Text(
-                    task.currentFile.ifBlank { "处理中…" },
-                    style = MaterialTheme.typography.bodySmall,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                )
-                TextButton(onClick = onCancel) {
-                    Icon(Icons.Outlined.Stop, contentDescription = null)
-                    Spacer(Modifier.width(4.dp))
-                    Text("取消任务")
-                }
-            } else {
-                task.summary?.let { Text(it, style = MaterialTheme.typography.bodyMedium) }
-                task.error?.let {
-                    Text(
-                        it,
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.error,
-                    )
                 }
             }
         }

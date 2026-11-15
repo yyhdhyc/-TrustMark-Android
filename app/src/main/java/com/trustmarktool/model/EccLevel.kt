@@ -19,10 +19,22 @@ enum class EccLevel(
     BCH_SUPER("BCH Super（最稳健）", "BCH_SUPER", 40, 8),
     ;
 
+    /** Two-line menu title: the short technical name, not the marketing label. */
+    val menuTitle: String
+        get() = when (this) {
+            BCH_3 -> "BCH 3"
+            BCH_4 -> "BCH 4"
+            BCH_5 -> "BCH 5"
+            BCH_SUPER -> "BCH Super"
+        }
+
     val description: String
         get() = "$dataBits 位数据 · 最多纠正 $allowedBitFlips 位"
 
     companion object {
+        /** Low correction capability to high: 3, 4, 5, Super. */
+        val orderedForMenu: List<EccLevel> = listOf(BCH_3, BCH_4, BCH_5, BCH_SUPER)
+
         fun fromWireName(value: String?): EccLevel? =
             entries.firstOrNull { it.wireName == value || it.name == value }
     }

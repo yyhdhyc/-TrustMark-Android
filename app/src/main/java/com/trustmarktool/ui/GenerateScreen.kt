@@ -74,6 +74,7 @@ import com.trustmarktool.model.MainUiState
 import com.trustmarktool.model.PayloadCodec
 import com.trustmarktool.model.TaskProgress
 import com.trustmarktool.model.TaskState
+import com.trustmarktool.ui.components.TaskProgressCard
 import java.util.Locale
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -174,7 +175,7 @@ fun GenerateScreen(
             )
         }
 
-        generate.task?.let { TaskCard(task = it, onCancel = viewModel::cancelEncode) }
+        generate.task?.let { TaskProgressCard(task = it, onCancel = viewModel::cancelEncode) }
 
         Spacer(Modifier.height(8.dp))
     }
@@ -319,8 +320,9 @@ private fun UniversalConfigCard(
             DropdownField(
                 label = "BCH 纠错等级",
                 selected = state.ecc,
-                options = EccLevel.entries,
-                optionLabel = { "${it.wireName} · ${it.dataBits} 位" },
+                options = EccLevel.orderedForMenu,
+                optionLabel = { it.menuTitle },
+                optionSubtitle = { it.description },
                 enabled = enabled,
                 onSelect = onEccChange,
             )
@@ -590,76 +592,6 @@ private fun ModelCard(
     }
 }
 
-@Composable
-private fun TaskCard(task: TaskProgress, onCancel: () -> Unit) {
-    Card {
-        Column(
-            modifier = Modifier.padding(14.dp),
-            verticalArrangement = Arrangement.spacedBy(6.dp),
-        ) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                when (task.state) {
-                    TaskState.RUNNING -> CircularProgressIndicator(modifier = Modifier.size(18.dp), strokeWidth = 2.dp)
-                    TaskState.COMPLETED -> Icon(
-                        Icons.Filled.CheckCircle,
-                        contentDescription = null,
-                        tint = MaterialTheme.colorScheme.primary,
-                    )
-                    TaskState.CANCELLED -> Icon(Icons.Filled.Stop, contentDescription = null)
-                    TaskState.ERROR -> Icon(
-                        Icons.Filled.Error,
-                        contentDescription = null,
-                        tint = MaterialTheme.colorScheme.error,
-                    )
-                }
-                Spacer(Modifier.width(8.dp))
-                Text(
-                    when (task.state) {
-                        TaskState.RUNNING -> task.phase
-                        TaskState.COMPLETED -> "处理完成"
-                        TaskState.CANCELLED -> "已取消"
-                        TaskState.ERROR -> "处理失败"
-                    },
-                    style = MaterialTheme.typography.titleSmall,
-                    fontWeight = FontWeight.SemiBold,
-                )
-                Spacer(Modifier.weight(1f))
-                if (task.state == TaskState.RUNNING) {
-                    TextButton(onClick = onCancel) { Text("取消") }
-                } else {
-                    Text(
-                        "${task.completed}/${task.total}",
-                        style = MaterialTheme.typography.labelMedium,
-                    )
-                }
-            }
-
-            if (task.state == TaskState.RUNNING) {
-                if (task.indeterminate) {
-                    LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
-                } else {
-                    LinearProgressIndicator(progress = { task.fraction }, modifier = Modifier.fillMaxWidth())
-                }
-                Text(
-                    task.currentFile.ifBlank { "准备中…" },
-                    style = MaterialTheme.typography.bodySmall,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                )
-            } else if (!task.summary.isNullOrBlank()) {
-                Text(task.summary, style = MaterialTheme.typography.bodySmall)
-            }
-            if (task.state == TaskState.ERROR && !task.error.isNullOrBlank()) {
-                Text(
-                    task.error,
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.error,
-                )
-            }
-        }
-    }
-}
-
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun <T> DropdownField(
@@ -667,6 +599,7 @@ private fun <T> DropdownField(
     selected: T,
     options: List<T>,
     optionLabel: (T) -> String,
+    optionSubtitle: ((T) -> String?)? = null,
     enabled: Boolean,
     onSelect: (T) -> Unit,
 ) {
@@ -692,7 +625,18 @@ private fun <T> DropdownField(
         ) {
             options.forEach { option ->
                 DropdownMenuItem(
-                    text = { Text(optionLabel(option)) },
+                    text = {
+                        Column {
+                            Text(optionLabel(option))
+                            optionSubtitle?.invoke(option)?.let { subtitle ->
+                                Text(
+                                    subtitle,
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                            }
+                        }
+                    },
                     onClick = {
                         expanded = false
                         onSelect(option)

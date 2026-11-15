@@ -43,6 +43,7 @@ class EncodeWorker(
         var terminalState = TaskState.ERROR
         var terminalSummary = "任务失败"
         var terminalError: String? = null
+        var terminalDetails: String? = null
         var completedSoFar = 0
         var totalTasks = totalAtStart
         var result: Result = Result.failure(
@@ -141,13 +142,18 @@ class EncodeWorker(
                 } catch (cancelledByWork: CancellationException) {
                     tasks[index] = task.copy(status = GenerateTaskStatus.FAILED, error = "已取消")
                     throw cancelledByWork
-                } catch (error: Exception) {
-                    val reason = error.message ?: error.javaClass.simpleName
+                } catch (error: Throwable) {
+                    // Never let one corrupt/unsupported image abort the whole
+                    // batch. Include both the user-facing file and the technical
+                    // cause so the progress card is actionable.
+                    val reason = error.message?.takeIf { it.isNotBlank() }
+                        ?: error.javaClass.simpleName
+                    val detail = "${task.sourceDisplayName} -> ${task.outputFileName}: $reason"
                     tasks[index] = task.copy(
                         status = GenerateTaskStatus.FAILED,
                         error = reason,
                     )
-                    failures += "${task.outputFileName}: $reason"
+                    failures += detail
                 } finally {
                     // Exactly one increment per task, including failures.
                     completed += 1
@@ -174,9 +180,17 @@ class EncodeWorker(
                 failureFile.writeText(failures.joinToString("\n"))
             }
 
-            val summary =
-                "成功 $succeeded 个副本，失败 ${failures.size} 个，总计 $total 个" +
-                    "（每张源图独立编号）"
+            terminalDetails = if (failures.isEmpty()) {
+                null
+            } else {
+                buildString {
+                    append("失败详情（共 ${failures.size} 个）：")
+                    failures.take(8).forEach { append("\n• ").append(it) }
+                    if (failures.size > 8) append("\n… 另有 ${failures.size - 8} 个失败")
+                }.take(4096)
+            }
+
+            val summary = "成功 $succeeded 个副本，失败 ${failures.size} 个，总计 $total 个"
             if (cancelled || isStopped) {
                 terminalState = TaskState.CANCELLED
                 terminalSummary = "已取消：完成 $completed/$total，成功 $succeeded 个"
@@ -186,6 +200,7 @@ class EncodeWorker(
                         WorkerKeys.ERROR to terminalError,
                         WorkerKeys.STATE to terminalState.name,
                         WorkerKeys.SUMMARY to terminalSummary,
+                        WorkerKeys.DETAILS to terminalDetails.orEmpty(),
                         WorkerKeys.COMPLETED to completed,
                         WorkerKeys.TOTAL to total,
                     ),
@@ -199,6 +214,7 @@ class EncodeWorker(
                         WorkerKeys.ERROR to terminalError,
                         WorkerKeys.STATE to terminalState.name,
                         WorkerKeys.SUMMARY to terminalSummary,
+                        WorkerKeys.DETAILS to terminalDetails.orEmpty(),
                         WorkerKeys.FAILED_COUNT to failures.size,
                         WorkerKeys.TOTAL to total,
                     ),
@@ -211,6 +227,7 @@ class EncodeWorker(
                         WorkerKeys.RESULT_COUNT to succeeded,
                         WorkerKeys.FAILED_COUNT to failures.size,
                         WorkerKeys.SUMMARY to summary,
+                        WorkerKeys.DETAILS to terminalDetails.orEmpty(),
                         WorkerKeys.STATE to terminalState.name,
                         WorkerKeys.COMPLETED to completed,
                         WorkerKeys.TOTAL to total,
@@ -222,15 +239,16 @@ class EncodeWorker(
             terminalSummary = "已取消：完成 $completedSoFar/$totalTasks"
             terminalError = "任务已取消"
             throw cancelled
-        } catch (fatal: Exception) {
+        } catch (fatal: Throwable) {
             terminalState = TaskState.ERROR
             terminalSummary = "处理失败"
-            terminalError = fatal.message ?: fatal.javaClass.simpleName
+            terminalError = fatal.message?.takeIf { it.isNotBlank() } ?: fatal.javaClass.simpleName
             result = Result.failure(
                 workDataOf(
                     WorkerKeys.ERROR to terminalError,
                     WorkerKeys.STATE to terminalState.name,
                     WorkerKeys.SUMMARY to terminalSummary,
+                    WorkerKeys.DETAILS to terminalDetails.orEmpty(),
                 ),
             )
         } finally {
@@ -250,6 +268,7 @@ class EncodeWorker(
                             WorkerKeys.COMPLETED to completedSoFar,
                             WorkerKeys.TOTAL to totalTasks,
                             WorkerKeys.SUMMARY to terminalSummary,
+                            WorkerKeys.DETAILS to terminalDetails.orEmpty(),
                             WorkerKeys.ERROR to terminalError.orEmpty(),
                         ),
                     )

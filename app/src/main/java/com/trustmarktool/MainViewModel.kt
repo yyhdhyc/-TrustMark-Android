@@ -14,6 +14,7 @@ import androidx.work.workDataOf
 import com.trustmarktool.data.BatchStore
 import com.trustmarktool.data.DecodeStore
 import com.trustmarktool.data.ExportFormatter
+import com.trustmarktool.data.GeneratePreferences
 import com.trustmarktool.data.ImageStore
 import com.trustmarktool.data.ModelRepository
 import com.trustmarktool.data.OutputNaming
@@ -48,8 +49,23 @@ import kotlin.math.roundToInt
 class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     private val application: Application = getApplication()
+    private val generatePreferences = GeneratePreferences(application)
+    private val savedGenerate = generatePreferences.load()
     private val workManager = WorkManager.getInstance(application)
-    private val _uiState = kotlinx.coroutines.flow.MutableStateFlow(MainUiState())
+    private val _uiState = kotlinx.coroutines.flow.MutableStateFlow(
+        MainUiState(
+            generate = GenerateUiState(
+                text = savedGenerate.text,
+                mode = savedGenerate.mode,
+                selectedBatchId = savedGenerate.batchId,
+                ecc = if (savedGenerate.mode == GenerateMode.BATCH) {
+                    EccLevel.BCH_SUPER
+                } else {
+                    EccLevel.BCH_5
+                },
+            ),
+        ),
+    )
     val uiState: kotlinx.coroutines.flow.StateFlow<MainUiState> = _uiState
 
     init {
@@ -112,25 +128,29 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun setGenerateMode(mode: GenerateMode) {
+        val current = _uiState.value
+        val nextBatch = if (mode == GenerateMode.BATCH) {
+            current.generate.selectedBatchId ?: current.batches.firstOrNull()?.batch?.batchId
+        } else {
+            current.generate.selectedBatchId
+        }
         _uiState.update { state ->
-            val firstBatch = state.batches.firstOrNull()?.batch?.batchId
             state.copy(
                 generate = state.generate.copy(
                     mode = mode,
-                    selectedBatchId = if (mode == GenerateMode.BATCH) {
-                        state.generate.selectedBatchId ?: firstBatch
-                    } else {
-                        state.generate.selectedBatchId
-                    },
+                    selectedBatchId = nextBatch,
                     ecc = if (mode == GenerateMode.BATCH) EccLevel.BCH_SUPER else state.generate.ecc,
                 ),
                 tab = 0,
             )
         }
+        generatePreferences.saveMode(mode)
+        generatePreferences.saveBatch(nextBatch)
     }
 
     fun setGenerateText(value: String) {
         _uiState.update { it.copy(generate = it.generate.copy(text = value)) }
+        generatePreferences.saveText(value)
     }
 
     fun setEcc(ecc: EccLevel) {
@@ -160,6 +180,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 ),
             )
         }
+        generatePreferences.saveMode(GenerateMode.BATCH)
+        generatePreferences.saveBatch(batchId)
     }
 
     /**
@@ -473,21 +495,22 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     fun refreshBatches() {
         viewModelScope.launch {
             val summaries = withContext(Dispatchers.IO) { BatchStore.listSummaries(application) }
+            val current = _uiState.value
+            val ids = summaries.map { it.batch.batchId }.toSet()
+            val keep = current.generate.selectedBatchId?.takeIf { it in ids }
+            val fallback = summaries.firstOrNull()?.batch?.batchId
+            val selected = if (current.generate.mode == GenerateMode.BATCH) {
+                keep ?: fallback
+            } else {
+                keep
+            }
             _uiState.update { state ->
-                val ids = summaries.map { it.batch.batchId }.toSet()
-                val keep = state.generate.selectedBatchId?.takeIf { it in ids }
-                val fallback = summaries.firstOrNull()?.batch?.batchId
                 state.copy(
                     batches = summaries,
-                    generate = state.generate.copy(
-                        selectedBatchId = if (state.generate.mode == GenerateMode.BATCH) {
-                            keep ?: fallback
-                        } else {
-                            keep
-                        },
-                    ),
+                    generate = state.generate.copy(selectedBatchId = selected),
                 )
             }
+            generatePreferences.saveBatch(selected)
         }
     }
 
@@ -543,6 +566,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         message = "批次 ${result.first.batchId} 已创建，共 ${cleanedRecipients.size} 个编号",
                     )
                 }
+                generatePreferences.saveMode(GenerateMode.BATCH)
+                generatePreferences.saveBatch(result.first.batchId)
             } catch (error: Exception) {
                 _uiState.update { it.copy(message = error.message ?: "创建批次失败") }
             }
@@ -733,6 +758,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         val completed = data.getInt(WorkerKeys.COMPLETED, previous?.completed ?: 0)
         val summary = data.getString(WorkerKeys.SUMMARY)
         val error = data.getString(WorkerKeys.ERROR)
+        val details = data.getString(WorkerKeys.DETAILS)?.takeIf { it.isNotBlank() }
+            ?: previous?.details
         val phase = data.getString(WorkerKeys.PHASE) ?: when (terminal) {
             TaskState.RUNNING -> previous?.phase ?: "运行中"
             TaskState.COMPLETED -> "处理完成"
@@ -755,6 +782,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 null
             },
             error = error,
+            details = if (finished) details else previous?.details,
         )
 
         _uiState.update { state ->

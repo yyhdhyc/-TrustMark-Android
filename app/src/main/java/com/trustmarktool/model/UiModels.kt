@@ -24,6 +24,8 @@ data class TaskProgress(
     val indeterminate: Boolean = false,
     val summary: String? = null,
     val error: String? = null,
+    /** Per-file failure reasons for the shared progress card. */
+    val details: String? = null,
 ) {
     val running: Boolean get() = state == TaskState.RUNNING
 

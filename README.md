@@ -1,602 +1,338 @@
-# 隐迹
+# 隐迹 · TrustMark Android
 
-**Android 批量图片隐水印与溯源工具**
+在 Android 手机上批量写入、批量读取 Adobe TrustMark 隐水印。应用使用 Rust 版 TrustMark + ONNX Runtime，通过 JNI 在端侧完成推理；图片和批次映射都留在本机。
 
-- 当前工程版本：`1.2.0`（`versionCode = 3`）
-- 文档状态：**v1.2.0 已实施，debug 构建与单元测试通过**
-- 应用显示名称：**隐迹**
-- Android 包名：`com.trustmarktool`（debug 变体为 `com.trustmarktool.debug`，保持不变）
+- **应用名**：隐迹
+- **包名**：`com.trustmarktool`（debug 为 `com.trustmarktool.debug`）
+- **当前版本**：1.2.1（versionCode 4）
+- **模型**：TrustMark **Q**，编码器 + 解码器
+- **ABI**：`arm64-v8a`、`x86_64`
+- **最低系统**：Android 8.0（API 26）
 
-> 本文件同时是 v1.2.0 的设计说明和交付记录。实现已按“确认”后的范围完成；尚未在物理设备上验证 JNI、ONNX Runtime 与模型推理。
+---
 
-## 0. 当前交付状态
+## 1. 功能
 
-| 项目 | 结果 |
+| 功能 | 说明 |
 |---|---|
-| 版本 | `1.2.0`，`versionCode 3`，debug 变体 `1.2.0-debug` |
-| 单元测试 | `:app:testDebugUnitTest`，15/15 通过 |
-| Lint | `:app:lintDebug`，0 errors / 8 warnings |
-| Debug APK | `dist/TrustMarkTool-1.2.0-debug.apk` |
-| APK 大小 | `37,138,499` bytes |
-| APK SHA-256 | `3A84E1901CF4F295952E6156C3C814B487D3AFC08AEB7768735E9B27625F3439` |
-| 签名 | debug keystore，APK Signature Scheme v2 |
-| ABI | `arm64-v8a`、`x86_64`（含 `libtrustmark_jni.so`、`libonnxruntime.so`） |
-| 真机验证 | **未执行**：JNI、ORT、模型推理、MediaStore 读写仍需物理设备验收 |
+| 批量生成 | 一次最多 50 张源图，逐张读取原图、逐张编码 |
+| 通用模式 | 固定文本写入每张图，不携带编号；适合 `CONFIDENTIAL`、`ACME 2026` 这类统一标记 |
+| 批次模式 | 批次短码 + 接收人编号；适合会议材料、逐人分发、泄露溯源 |
+| 批量解密 | 自动识别通用帧 / 批次帧，批量提取文本或批次编号 |
+| 本地映射 | 批次、接收人、输出记录加密保存在应用私有目录 |
+| 导出 | 解密结果导出 CSV / JSON；批次映射导出 CSV / JSON |
+| 进度与取消 | 前台通知 + 应用内进度卡片，可取消未完成任务 |
+| 失败隔离 | 单张失败不中断整批，卡片列出文件名与原因 |
 
-> 由于当前构建机没有可用的 Rust/Android NDK 工具链，`libtrustmark_jni.so` 采用预编译库 + 定点二进制补丁把 strength clamp 上限改为 2.0；详见 7.3。`native/src/lib.rs` 已同步改为 `0.0..2.0`，后续具备 NDK 时应重新交叉编译并替换补丁库。
-
----
-
-## 1. 版本目标
-
-v1.2.0 是一次面向实际分发场景的重构，核心变化是：
-
-1. **通用模式**只承载固定文本，不再携带编号、份数或映射表。
-2. **批次溯源模式**只承载批次短码和 12 位编号，固定使用 BCH Super，嵌入强度默认 `1.3` 且可由用户自主调节。
-3. 解码器根据 payload 第 0 位分流到两种帧格式，批次帧必须通过 CRC-7。
-4. 生成页改为“通用 / 批次”二选一的分段按钮，按模式只渲染必要控件。
-5. 解码页统一承载两种帧：读取 payload 第 0 位后，自动分流为通用模式解密或批次模式解密；批次帧校验通过后自动查询本地映射表。
-6. 应用名称改为“隐迹”，版本号升到 `1.2.0`。
-
-明确不变：
-
-- `applicationId` 不变，保证可覆盖安装旧版本。
-- ONNX Runtime 完整版、`arm64-v8a` / `x86_64` 双 ABI 不变。
-- JNI 方法签名、Rust TrustMark 推理路径、Q 模型不变。
-- 模型下载、SHA-256 校验、双 ABI 打包方式不变。
-- 进度条状态机代码不修改。
+应用只有两个主 Tab：**生成** 和 **解密**。批次命中信息直接显示在解密结果中，不再单独提供溯源页。
 
 ---
 
-## 2. 两种工作模式
+## 2. 直接安装
 
-### 2.1 通用模式
-
-适用于“固定文本”水印，例如：
+仓库中的 debug APK：
 
 ```text
-CONFIDENTIAL
-内部资料
-ACME-2026
+dist/TrustMarkTool-1.2.1-debug.apk
 ```
 
-- 用户选择源图片。
-- 输入固定文本。
-- 选择 BCH 纠错等级。
-- 不生成编号，不读取映射表，不限制份数。
-- 每张源图生成一个输出文件。
+- 大小：`38,707,624` bytes
+- SHA-256：`d9ae088b9adb7e77dd87576dda8738ae4c195f2d09d2c04eed21d489748fb773`
+- 签名：debug keystore，APK Signature Scheme v2
+- 首次启动会从 Adobe 官方 CDN 下载 Q 模型（约 62 MB），需联网；下载完成后可离线使用。
 
-### 2.2 批次溯源模式
-
-适用于“同一批次分发给多人”的场景：
-
-- 用户选择源图片。
-- 从本地批次列表中选择一个批次。
-- 系统按映射表为每个接收人分配 12 位编号。
-- 固定 BCH Super；嵌入强度默认 `1.3`，可在生成前自主调节。
-- 不输入文本，不选择 BCH，不填写份数。
-- 每张源图按该批次的映射条目数生成对应数量的输出文件。
-
-批次短码与 12 位编号的组合，构成该输出图片的全局唯一标识。
+> debug 包名带 `.debug`，与 release 包可以并存。正式分发前应使用自己的 release keystore 重新签名。
 
 ---
 
-## 3. Payload 帧结构
+## 3. 使用流程
 
-### 3.1 可用容量
+### 3.1 通用模式：统一文本
 
-TrustMark 的 Rust API 只接受 `0/1` 位串。native 会在位串后补零到所选 BCH 等级的数据容量，再追加 BCH 校验位和 4 位 schema，最终固定为 100 位。
+1. 打开 **生成**，模式选择 **通用**。
+2. 从相册选择一张或多张 JPEG / PNG。
+3. 输入固定文本。仅支持 `A–Z`、`0–9`、空格、`-`、`_`、`.`，自动转大写，最长 15 字符。
+4. 选择 BCH 等级。默认 **BCH 5**；文本较长时改用 BCH 3 / 4，文本较短且希望更强纠错时用 **BCH Super**。
+5. 查看容量条：`已用 X 位 / 剩余 Y 位`，点“查看详情”可看帧头和二进制预览。
+6. 开始生成。每张源图生成 **1 个** 输出文件。
 
-Kotlin 侧可用的数据容量：
+示例：`ACME` + BCH Super = `6 + 4×5 = 26` 位，容量 40 位，剩余 14 位。
 
-| BCH 等级 | 数据容量 | 说明 |
-|---|---:|---|
-| `BCH_SUPER` | 40 位 | 批次模式固定使用 |
-| `BCH_5` | 61 位 | 通用模式可选 |
-| `BCH_4` | 68 位 | 通用模式可选 |
-| `BCH_3` | 75 位 | 通用模式可选 |
+### 3.2 批次模式：逐人编号
 
-“剩余可用位数”只按 `BCH 数据容量 - 自定义帧长度` 计算，不把 native 自动追加的 BCH/schema 位算进用户预算。
+1. 先在 **生成 → 批次与映射** 中新建批次，填写接收人列表（编号 1、2、3……）。
+2. 回到生成页，模式选择 **批次**。
+3. 选择源图，再选择批次。每张源图会按该批次的全部映射条目各生成一份。
+4. 调整嵌入强度。默认 `1.30`，范围 `0.50–2.00`，步长 `0.05`。强度越高越抗压缩，但原图视觉扰动也越明显。
+5. 开始生成。批次模式固定使用 **BCH Super**。
 
-### 3.2 通用模式帧
+示例：1 张源图 + 3 个接收人 → 3 个输出文件，编号分别为 1、2、3。2 张源图 + 3 个接收人 → 6 个输出文件，每张源图都从编号 1 开始。
 
-通用模式**移除编号字段**，帧结构为：
+### 3.3 解密与溯源
 
-| 字段 | 长度 | 说明 |
-|---|---:|---|
-| 帧类型 | 1 位 | 固定 `0` |
-| 字母表模式 | 1 位 | `0` = 5 位大写字母；`1` = 6 位扩展字母表 |
-| 文本长度 | 4 位 | `1..15`，`0` 保留为非法 |
-| 文本位串 | `L × 5` 或 `L × 6` 位 | 按字母表模式编码 |
+1. 打开 **解密**，选择一张或多张可疑图片。
+2. 应用读取 payload 第 0 位，自动分流：
+   - 0：通用帧，显示固定文本；
+   - 1：批次帧，校验 CRC-7，读取 4 字母批次短码和 12 位编号。
+3. 批次帧通过 CRC 后，自动查询本地加密映射表：
+   - 命中接收人：绿色，显示批次名、接收人、编号；
+   - 批次存在但没有对应编号：黄色，“本地无匹配”；
+   - 帧损坏 / CRC 失败：红色，“解码失败”。
+4. 结果可导出 CSV / JSON。
 
-帧头固定为 **6 位**：
+> 解码结果依赖本机的 `BatchStore`。换手机、清除数据或卸载应用后，映射表不会自动恢复；请定期导出备份。
+
+---
+
+## 4. Payload 规范
+
+TrustMark 原生只接受 0/1 位串。应用在 Kotlin 层构造数据位，native 层补齐到 BCH 数据容量后追加校验位和 4 位 schema，最终严格为 **100 位**。
+
+### 4.1 通用帧
 
 ```text
-bit 0      : 帧类型 = 0
+bit 0      : 0（通用帧）
 bit 1      : 字母表模式
-bit 2..5   : 文本长度 L（4 位）
-bit 6..    : 文本位串
+             0 = A–Z，每字符 5 位
+             1 = A–Z / 0–9 / 空格 / - _ .，每字符 6 位
+bit 2..5   : 文本长度 1..15（4 位）
+bit 6..    : 文本字符
 ```
 
-字母表定义与 v1.1 保持一致：
+帧头固定 6 位。不同 BCH 等级的数据容量与文本上限：
 
-- **5 位模式**：`A-Z`，共 26 个符号；仅当文本全部由大写字母组成时使用。
-- **6 位模式**：`ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_ .`，共 40 个符号。
-- 输入统一转为大写 ASCII；不支持的字符会被过滤；连续空格合并。
-- 不做静默截断；超容量必须阻止生成并显示具体原因。
+| BCH | 数据容量 | 大写字母上限 | 字母数字上限 |
+|---|---:|---:|---:|
+| BCH Super | 40 位 | 6 | 5 |
+| BCH 5 | 61 位 | 11 | 9 |
+| BCH 4 | 68 位 | 12 | 10 |
+| BCH 3 | 75 位 | 13 | 11 |
 
-#### 通用模式容量表
+文本必须非空；超出容量时在任务创建阶段阻止整批，并给出具体原因。
 
-| BCH 等级 | 数据容量 | 5 位文本上限 | 6 位文本上限 | 对应剩余位数 |
-|---|---:|---:|---:|---:|
-| `BCH_SUPER` | 40 | 6 字符 | 5 字符 | 4 / 4 位 |
-| `BCH_5` | 61 | 11 字符 | 9 字符 | 0 / 1 位 |
-| `BCH_4` | 68 | 12 字符 | 10 字符 | 2 / 2 位 |
-| `BCH_3` | 75 | 13 字符 | 11 字符 | 4 / 3 位 |
-
-示例：`ACME` 使用 5 位模式，总长为 `6 + 4 × 5 = 26` 位；选择 BCH Super 时剩余 `40 - 26 = 14` 位。
-
-通用模式解码结果只包含文本；不再有编号、编号位宽或“自动编号”概念。
-
-### 3.3 批次溯源模式帧
-
-批次模式**移除图片序号字段和文本字段**，帧结构固定为 40 位：
-
-| 字段 | 长度 | 说明 |
-|---|---:|---|
-| 帧类型 | 1 位 | 固定 `1` |
-| 批次短码 | 20 位 | 4 个字母，每个 5 位 |
-| 全局唯一编号 | 12 位 | `1..4095`，`0` 保留 |
-| CRC-7 校验码 | 7 位 | 对前 33 位计算 |
-| **合计** | **40 位** | 正好等于 BCH Super 数据容量 |
+### 4.2 批次帧
 
 ```text
-bit 0       : 帧类型 = 1
-bit 1..20   : 批次短码，4 × 5 位
-bit 21..32  : 12 位编号
-bit 33..39  : CRC-7
+bit 0      : 1（批次帧）
+bit 1..20  : 4 个字母，每个 5 位（A=0 .. Z=25）
+bit 21..32 : 12 位编号，范围 1..4095
+bit 33..39 : CRC-7，7 位
 ```
 
-#### 批次短码
+固定 40 位，只能使用 **BCH Super**。
 
-- 固定 4 个 ASCII 大写字母。
-- 每个字母映射为 5 位：`A = 0`，`B = 1`，……，`Z = 25`。
-- 值 `26..31` 为非法编码，解析时直接判定帧无效。
-- 可用空间：`26^4 = 456,976` 个短码。
-- 短码只允许 `A-Z`，不再使用 v1.1 的数字、`B` 前缀或 `G` 时间戳格式。
+CRC 采用 CRC-7/MMC 参数：
 
-#### 12 位编号
+- 多项式：`x^7 + x^3 + 1`（`0x09`）
+- 初始值：`0`
+- 不反转，不异或输出
+- 8 位寄存器实现，隐含 `x^7` 项，末尾补 7 个 0
+- 校验值：`"123456789"` → `0x75`
 
-- 单批次编号范围 `1..4095`。
-- `0` 保留为非法值。
-- “全局唯一”由“4 字母批次短码 + 12 位编号”共同保证；单个 12 位字段本身只保证批次内唯一。
-- 单批次最多 4095 个接收人/输出；超过必须在建表时阻止。
+示例：批次 `ABCD`、编号 `42`：
 
-#### CRC-7 参数
+```text
+数据位 100000000010001000011000000101010
+CRC    1000110  (0x46)
+完整   1000000000100010000110000001010101000110
+```
 
-v1.2.0 固定使用 **CRC-7/MMC**：
+### 4.3 兼容性
 
-| 参数 | 值 |
+v1.2 的帧格式与 v1.1 的 TMK2 帧不兼容。v1.1 生成的图片不能按 v1.2 规则解出文本或批次；旧 `B`/`G` 开头的 3 字符批次也不会出现在新批次选择器中。
+
+---
+
+## 5. 输出与映射表
+
+### 5.1 输出文件
+
+- 目录：`Pictures/TrustMarkTool/`
+- 命名：`原文件名_tm.ext`
+- 同名冲突：`原文件名_tm_2.ext`、`_tm_3.ext`……
+- 格式：PNG 输入输出 PNG（保留 alpha）；JPEG 输入输出 JPEG
+- 每份输出都重新读取原始 URI 并解码，绝不在已编码 Bitmap 上二次编码
+
+### 5.2 批次映射
+
+| 数据 | 内容 |
 |---|---|
-| 宽度 | 7 |
-| 多项式 | `0x09`（`x^7 + x^3 + 1`） |
-| 初始值 | `0x00` |
-| 输入反射 | 否 |
-| 输出反射 | 否 |
-| 结果异或 | `0x00` |
-| 校验范围 | 前 33 位：帧类型 + 批次短码 + 编号 |
+| `Batch` | 4 字母短码、批次名、创建时间、模型变体 Q、BCH 等级、备注 |
+| `MappingEntry` | 批次 ID、编号 1..4095、接收人、备注 |
+| `OutputRecord` | 批次 ID、源图标识、编号、输出文件名、创建时间 |
 
-编码时采用 CRC-7/MMC 的标准 8 位寄存器实现（隐式 `x^7` 项，末尾补 7 个零），取低 7 位余数并追加到末尾；该形式与 SD/eMMC 的 CRC-7 等价。`123456789` 的 ASCII 位串校验值应为 `0x75`（单元测试覆盖）。解码时重新计算前 33 位的 CRC 并与后 7 位比较。
-
-CRC 失败时直接返回：
+存储位置：
 
 ```text
-解码失败
+filesDir/batch_store.enc
 ```
 
-不得把 CRC 失败的结果交给映射表查询，也不得显示为“无匹配”。
-
-### 3.4 新旧帧结构对比
-
-| 项目 | v1.1 及更早（TMK2） | v1.2 通用模式 | v1.2 批次模式 |
-|---|---|---|---|
-| 起始标识 | 3 位 magic `101` | 1 位帧类型 `0` | 1 位帧类型 `1` |
-| 字母表 | 1 位 | 1 位 | 无 |
-| 文本长度 | 4 位 | 4 位 | 无 |
-| 编号位宽 | 2 位 | 无 | 无 |
-| 编号 | 0 / 8 / 16 / 32 位 | 无 | 12 位，固定 |
-| 文本 | 5/6 位 × L | 5/6 位 × L | 无 |
-| 批次短码 | 无 | 无 | 20 位，4 个字母 |
-| CRC | 无 | 无 | 7 位 CRC-7/MMC |
-| 帧头 | 10 位 | 6 位 | 40 位（整帧） |
-| BCH | 可选 | 可选 | 固定 Super |
-| 嵌入强度 | 默认 0.95 | 保持现有默认 | 默认 1.3，可调 0.50–2.00 |
-| 文件名标识 | `_tm_b{批次}_n{编号}` | `_tm` | `_tm` |
-
-### 3.5 解码分流
-
-解码器读取恢复出的 payload 第 0 位：
+使用 Android Keystore 中的 AES-256-GCM 密钥加密，密钥别名：
 
 ```text
-bit 0 == 0  -> 通用模式解析
-bit 0 == 1  -> 批次模式解析
+trustmark_batch_store_key_v1
 ```
 
-批次模式必须依次完成：
+映射表只存在应用私有目录，不写外部存储，也不上传。卸载应用会丢失；UI 中有持续提示。
 
-1. 检查总长度至少 40 位。
-2. 解析 4 个 5 位字母，任一值大于 25 则失败。
-3. 解析 12 位编号，`0` 视为失败。
-4. 验证 CRC-7。
-5. 全部通过后，才允许查询 `BatchStore`。
+### 5.3 导出
 
-任一步失败都返回“解码失败”，不进入映射匹配。
-
-### 3.6 兼容性说明（重要）
-
-v1.2.0 的帧格式与 v1.1 不兼容：
-
-- v1.1 帧以 `101` 开头，v1.2 解码器会把它当作批次帧，随后 CRC 校验失败。
-- v1.2 **不承诺**解码 v1.1 或更早版本生成的水印。
-- v1.1 的批次短码含数字、`B` 前缀或 `G` 时间戳，不能表示为 4 个 `A-Z` 字母，因此不能直接用于 v1.2 批次模式。
-- 升级后旧批次仍可保留在本地数据库中查看，但需要重新建立 4 字母批次并重新生成图片，才能用于 v1.2 溯源。
-- 如必须保留旧图解码能力，应保留 v1.1 APK 或另做离线兼容解码工具，不把兼容逻辑混入 v1.2 主解码路径。
-
-### 3.7 批次强度自主调节（默认 1.3）
-
-批次模式编码时，Kotlin 层把用户当前选择的强度传给 JNI：
-
-```text
-strength = 1.3   // 默认值
-```
-
-- 可调范围：`0.50–2.00`，步进 `0.05`。
-- 默认值：`1.30`。
-- 该值只用于批次模式；通用模式保持现有强度策略。
-- 强度不写入 payload，也不影响 40 位帧结构；它只影响编码器的嵌入强度。
-- 不做隐式取整或静默回退；UI 显示值与传入 JNI 的值必须一致。
-
-需要注意：当前 native 包装层存在
-
-```text
-strength.clamp(0.0, 1.0)
-```
-
-如果不修改，用户设置的 `1.3` 会被静默压成 `1.0`。v1.2 实施时必须把上限调整到 `2.0`（下限仍为 `0.0`），否则“可调强度”只是 UI 文案，实际并未生效。
-
-该调整只修改算法参数上限，不改变：
-
-- JNI 方法签名；
-- `.so` 的 ABI；
-- ONNX Runtime 版本；
-- Rust/ORT 推理路径；
-- 模型文件。
-
-`strength` 通过 `GenerateTask` 持久化到任务计划 JSON，Worker 逐任务读取；这样即使任务在后台恢复，也不会退回默认值。
-
----
-
-## 4. UI 交互重构
-
-### 4.1 主界面
-
-- 删除顶部“TrustMark 工具”大标题和副标题。
-- Tab 栏上移，成为页面最顶部的第一个内容。
-- Tab 改为两个：
-  - 生成
-  - 解密
-- 不再保留独立的“溯源查询”页；批次溯源信息并入解密结果。
-- 应用显示名称改为“隐迹”。
-
-### 4.2 生成页
-
-顶部增加 `SingleChoiceSegmentedButtonRow`：
-
-```text
-[ 通用模式 ] [ 批次溯源模式 ]
-```
-
-#### 通用模式
-
-只渲染：
-
-1. 源图片选择。
-2. “固定文本”输入框。
-3. “BCH 纠错等级”下拉菜单。
-4. 容量指示区。
-
-彻底删除：
-
-- 编号位宽；
-- 每张图片生成份数；
-- 使用映射表；
-- 起始编号、步长、自动编号。
-
-#### 批次溯源模式
-
-只渲染：
-
-1. 源图片选择。
-2. “批次”下拉菜单。
-3. “嵌入强度”滑杆/步进器：
-   - 范围 `0.50–2.00`；
-   - 步进 `0.05`；
-   - 默认 `1.30`；
-   - 实时显示当前值，例如 `强度 1.30`；
-   - 辅助说明“强度越高越明显，但可能影响画质”。
-4. 说明文字：
-
-```text
-系统将根据映射表自动分配编号并锁定 BCH Super。
-```
-
-5. 容量指示区。
-
-彻底删除：
-
-- 固定文本输入框；
-- BCH 纠错等级下拉菜单；
-- 份数输入框；
-- 编号位宽、自动编号、起始编号、步长。
-
-批次模式下，输出数量由映射表条目数决定；没有映射条目时禁止开始。
-
-### 4.3 容量指示区
-
-删除原来的大卡片（包括大面积棕色/强调色背景）。
-
-改为一行紧凑区域：
-
-```text
-已用 26 位 / 剩余 14 位
-[========------------------]  LinearProgressIndicator
-                                      [查看详情]
-```
-
-- 进度 = `已用 / BCH 数据容量`。
-- 文本固定为“已用 X 位 / 剩余 Y 位”。
-- “查看详情”打开 `ModalBottomSheet`，展示：
-  - BCH 等级与数据容量；
-  - 帧头各字段的位数分配；
-  - 文本/批次短码/编号/CRC 的占用；
-  - 实际二进制预览（按 4 位或 8 位分组）；
-  - 超容量时的具体错误原因。
-
-批次模式固定为 `40 / 40`，剩余 0；仍保留详情入口以便检查短码、编号和 CRC 位。
-
-### 4.4 文件输出
-
-- 通用模式和批次模式统一使用：
-
-```text
-原文件名_tm.扩展名
-```
-
-- 同名已存在时追加序号：
-
-```text
-原文件名_tm_2.扩展名
-原文件名_tm_3.扩展名
-```
-
-- 保存目录保持 `Pictures/TrustMarkTool/`。
-- 不覆盖原图。
-- 每个编码任务都必须从原始 URI 重新读取 Bitmap/字节，禁止复用上一份已编码结果。
-- 批次短码和编号不再写入文件名；溯源时从 payload 解码获得，映射表记录输出文件名。
-
-> 说明：v1.1 的 `_tm_b{批次}_n{编号}` 命名在 v1.2 中停用，以符合本规范给出的 `原文件名_tm.ext` 形式。
-
-### 4.5 解密页（自动分流）
-
-顶部说明文字改为：
-
-```text
-逐张运行解码器，恢复水印内容。支持 JPEG / PNG。
-```
-
-解密页不再区分“通用解密”和“批次解密”两个入口。每张图片完成 native 解码后，统一读取 payload 第 0 位：
-
-```text
-bit 0 == 0  -> 通用模式解密：解析文本
-bit 0 == 1  -> 批次模式解密：校验 CRC-7，解析 4 字母批次短码 + 12 位编号
-```
-
-批次帧 CRC 通过后，自动查询本地 `BatchStore`：
-
-- 命中：结果中直接展示批次名称、接收人、编号、创建时间。
-- 未命中：仍展示批次短码和编号，但标记“本地无匹配”。
-- CRC 失败：按“解码失败”处理，不查询映射表。
-- 不再提供“手动选择批次”兜底；批次识别完全来自 payload。
-
-结果列表改为 `ListItem` 风格：
-
-- 主标题：文件名。
-- 辅助文本：模式 + 置信度 + 翻转位，例如 `批次模式 · 置信度 96.4% · 翻转 2 位`。
-- 成功项：绿色图标。
-- 解码成功但本地无匹配：黄色图标。
-- 失败项：红色图标。
-- 去掉大面积红色背景卡片。
-- 保留 BCH 版本、payload 位串、批次短码、编号、接收人等详情。
-- CSV / JSON 导出保持可用，并新增 `frame_type`、`batch_id`、`serial`、`recipient` 字段。
-
-进度条状态机代码不改动。
-
-### 4.6 解密状态
-
-| 状态 | 颜色 | 含义 |
-|---|---|---|
-| 解密成功（通用） | 绿色 | 文本帧解析成功 |
-| 解密成功（批次且命中） | 绿色 | CRC 通过，批次和编号命中本地映射 |
-| 解密成功但无匹配 | 黄色 | CRC 有效，但本地没有对应批次或编号 |
-| 解密失败 | 红色 | 无法解码、帧非法或 CRC-7 校验失败 |
-
----
-
-## 5. 数据与映射
-
-### 5.1 批次
-
-`Batch` 至少包含：
-
-- `batchId`：4 个大写字母；
-- `name`；
-- `createdAt`；
-- `modelVariant = Q`；
-- `ecc = BCH_SUPER`；
-- `note`。
-
-v1.2 新建批次只生成 4 字母短码。旧批次如果短码不符合 4 字母规则，不进入批次模式下拉框，避免生成无法解析的帧。
-
-### 5.2 映射条目
-
-`MappingEntry`：
-
-- `batchId`；
-- `serial`：`1..4095`；
-- `recipientName`；
-- `note`。
-
-同一批次内编号唯一。建表时按输入顺序分配 `1..N`，超过 4095 直接拒绝。
-
-### 5.3 输出记录
-
-`OutputRecord`：
-
-- `batchId`；
-- `serial`；
-- 源文件名；
-- 输出文件名；
-- `createdAt`。
-
-批次模式下，每成功保存一张图片写入一条记录。任务失败不写入成功记录。
-
-### 5.4 加密存储
-
-- 使用 Android Keystore AES-256-GCM。
-- 文件保持应用私有：`filesDir/batch_store.enc`。
-- 不把映射表明文写入外部存储。
-- 映射界面继续提示：
-
-```text
-映射表是溯源的关键，卸载应用会丢失，请定期导出备份。
-```
-
-- CSV / JSON 导出字段保持：
+批次映射导出字段：
 
 ```text
 batch_id,batch_name,serial,recipient,note,output_file,created_at
 ```
 
----
+解密结果导出字段：
 
-## 6. 架构与实施范围
+```text
+file_name,frame_type,decoded_text,batch_id,serial,batch_name,recipient,ecc,confidence,bitflips,payload_bits,error
+```
 
-### 6.1 保持不变
-
-- `applicationId`：`com.trustmarktool`（debug 为 `com.trustmarktool.debug`）。
-- ONNX Runtime 完整版 `onnxruntime-android:1.22.0`。
-- `arm64-v8a` / `x86_64` 双 ABI。
-- `libtrustmark_jni.so`、Rust TrustMark 0.4.0、Q 模型。
-- WorkManager 前台任务、通知、进度状态机。
-- 模型下载、SHA-256 校验、离线 assets 方案。
-
-### 6.2 实施结果
-
-- `app/build.gradle.kts`：`versionCode 2 -> 3`，`versionName 1.1.0 -> 1.2.0`（已实施）。
-- `AndroidManifest.xml` / `strings.xml`：应用名称改为“隐迹”（已实施）。
-- `PayloadCodec.kt`：双帧编解码、批次帧 CRC-7、通用模式无编号（已实施）。
-- `Batch` / `BatchStore`：4 字母短码、12 位编号、旧 `B/G` 短码不再生成（已实施）。
-- `GenerateTask` / `EncodeWorker`：批次模式 `BCH_SUPER`，强度由 `GenerateTask.strength` 传给 JNI，默认 `1.3`（已实施）。
-- `MainViewModel`：双模式状态、批次任务构建、通用模式无编号（已实施）。
-- `GenerateScreen.kt`：移除大标题、分段按钮、双模式表单、容量条与详情 BottomSheet（已实施）。
-- `DecodeScreen.kt`：ListItem 结果、按 payload 第 0 位自动分流、批次命中/无匹配/失败三色状态（已实施）。
-- `MainScreen.kt`：Tab 从三个减为两个（生成、解密），移除溯源页面（已实施）。
-- `TraceScreen.kt`：已删除，自动查询逻辑并入解密结果（已实施）。
-- `OutputNaming.kt`：`_tm` / `_tm_2` 命名（已实施）。
-- `native/src/lib.rs`：strength 上限从 1.0 调整到 2.0（源码已改）；预编译 `.so` 同步打了二进制补丁（见 7.3）。
-- 单元测试：15 个，覆盖双帧、CRC-7、容量、短码、12 位编号、旧帧拒绝和文件名规则（已通过）。
-
-### 6.3 明确不做
-
-- 不切换 TFLite。
-- 不把 ONNX 模型转成 TFLite。
-- 不改 `applicationId`。
-- 不改 JNI 导出符号和 ABI。
-- 不改模型文件和模型下载地址。
-- 不重写进度条状态机。
-- 不在本次重构中增加云同步、账号体系或服务端。
+导出通过 SAF `CreateDocument` 完成，不需要存储权限。批次导出当前导出 **全部批次**，不是单个选中批次。
 
 ---
 
-## 7. 构建与部署
+## 6. 生成参数持久化
 
-### 7.1 环境
+以下值保存在 `SharedPreferences("generate_preferences")`，修改即保存，重启应用后恢复：
+
+- 固定文本
+- 当前生成模式（通用 / 批次）
+- 当前批次 ID
+
+批次列表和映射表本身不放在 SharedPreferences 中，而由加密的 `BatchStore` 管理。
+
+---
+
+## 7. 架构与目录
+
+```text
+app/src/main/java/com/trustmarktool/
+├── MainActivity.kt
+├── MainViewModel.kt              # 双模式状态、任务构建、批次 CRUD、导出
+├── model/
+│   ├── PayloadCodec.kt           # 通用帧 / 批次帧 / CRC-7 / 自动解码
+│   ├── GenerateTask.kt           # 扁平任务模型
+│   ├── Batch.kt
+│   ├── MappingEntry.kt
+│   ├── OutputRecord.kt
+│   ├── EccLevel.kt
+│   └── UiModels.kt
+├── data/
+│   ├── BatchStore.kt             # AES-GCM 加密批次/映射/输出记录
+│   ├── TaskPlanStore.kt          # Worker 任务清单 JSON
+│   ├── GeneratePreferences.kt    # 生成参数持久化
+│   ├── ImageStore.kt             # 原图读取、MediaStore 保存
+│   ├── OutputNaming.kt           # _tm / _tm_2 命名
+│   └── DecodeStore.kt
+├── nativebridge/
+│   ├── TrustMarkEngine.kt
+│   └── TrustMarkNative.kt
+├── worker/
+│   ├── EncodeWorker.kt
+│   ├── DecodeWorker.kt
+│   ├── WorkerKeys.kt
+│   └── TaskNotifications.kt
+└── ui/
+    ├── MainScreen.kt
+    ├── GenerateScreen.kt
+    ├── DecodeScreen.kt
+    ├── BatchManagementDialog.kt
+    └── components/TaskProgressCard.kt
+
+native/
+├── src/lib.rs                    # JNI 桥接、模型加载、PNG/JPEG 编解码
+├── vendor/trustmark/             # vendored TrustMark 0.4.0
+└── Cargo.toml
+
+scripts/
+├── build-native.sh
+├── build-native.ps1
+└── fetch-models.py
+```
+
+推理链路：
+
+```text
+Compose UI
+  → MainViewModel
+  → WorkManager (EncodeWorker / DecodeWorker)
+  → TrustMarkEngine (Kotlin)
+  → libtrustmark_jni.so (Rust)
+  → ONNX Runtime Android
+  → encoder_Q.onnx / decoder_Q.onnx
+```
+
+生成任务由 `MainViewModel` 先构建为扁平 `List<GenerateTask>`，写入 `TaskPlanStore`，Worker 只按清单顺序执行。进度、成功数、失败数和取消都以这份任务清单为准。
+
+---
+
+## 8. 构建
+
+### 8.1 环境
 
 - JDK 21
-- Android SDK 35
-- Gradle 8.9
-- AGP 8.7.3
-- Kotlin 2.0.21
-- minSdk 26，compileSdk / targetSdk 35
+- Android SDK Platform 35 + Build Tools 35.0.0
+- 项目自带 Gradle Wrapper（Gradle 8.9）
+- 如需重新编译 native：Rust 1.88+、Android NDK `27.0.12077973`、`cargo-ndk`
 
-### 7.2 构建
+在 `local.properties` 中配置 SDK：
+
+```properties
+sdk.dir=D:\\path\\to\\android-sdk
+```
+
+### 8.2 测试与 APK
 
 ```bash
 ./gradlew :app:testDebugUnitTest
+./gradlew :app:lintDebug
 ./gradlew :app:assembleDebug
 ```
 
-Windows：
-
-```powershell
-.\gradlew.bat :app:testDebugUnitTest
-.\gradlew.bat :app:assembleDebug
-```
-
-APK 输出：
+Windows 使用 `gradlew.bat`。产物：
 
 ```text
 app/build/outputs/apk/debug/app-debug.apk
-dist/TrustMarkTool-1.2.0-debug.apk
 ```
 
-### 7.3 JNI
+当前验证结果：
 
-预编译 `.so` 已位于：
+- 单元测试 17/17 通过
+- `lintDebug`：0 errors / 8 warnings
+- APK：versionCode 4，versionName `1.2.1-debug`，label `隐迹`
+- v2 签名，包含 `arm64-v8a` 与 `x86_64` 的 `libtrustmark_jni.so`、`libonnxruntime.so`
+
+### 8.3 重新编译 native
+
+预编译库已放在：
 
 ```text
 app/src/main/jniLibs/arm64-v8a/libtrustmark_jni.so
 app/src/main/jniLibs/x86_64/libtrustmark_jni.so
 ```
 
-如需重新交叉编译：
+重新生成：
 
 ```bash
+export ANDROID_NDK_HOME=/path/to/android-ndk-r27b
+cargo install cargo-ndk
 ./scripts/build-native.sh
 ```
 
-要求保持：
+脚本会执行 `cargo ndk -t arm64-v8a -t x86_64 -P 26`，将两个 `.so` 直接写到 `jniLibs`。产物必须保持 16 KB page size 对齐。
 
-- Rust `trustmark` 0.4.0；
-- `ort` 2.0.0-rc.10；
-- `load-dynamic`；
-- ORT Android 1.22.0 / API 22；
-- 16 KB page size 兼容链接参数。
+当前预编译库：
 
-#### 当前构建机的特殊处理（重要）
+| ABI | SHA-256 |
+|---|---|
+| arm64-v8a | `9e70ed8a548db812e0d09897940f998e384fdb869a3278ce253d62f114609ae5` |
+| x86_64 | `93860ec54f8ec49cbc10285a625c330c09164707e64a74b78266f52d98ee6c44` |
 
-v1.2.0 需要把 native strength clamp 从 `0.0..1.0` 放宽到 `0.0..2.0`。当前构建机安装 NDK/Rust 失败（`sdkmanager` 下载源不可用，`rustup-init` TLS 失败），因此没有重新交叉编译，而是对两个预编译库做了定点补丁：
+### 8.4 模型
 
-- `arm64-v8a/libtrustmark_jni.so`：在 clamp 序列中把 `fmov s1, #1.0` 改为 `fmov s1, #2.0`（文件偏移 `0xf4b0c`）。
-- `x86_64/libtrustmark_jni.so`：把 clamp 处的 `movss xmm0, [rip + 1.0f]` 改为读取一个已有 `2.0f` 常量（`vaddr 0x1d280`），避免修改被 73 处引用的 1.0f 常量。
-- 补丁前后均用 Capstone 反汇编核对；原始库备份在 `.temp/jni_backup/`（不进入 APK）。
-- `native/src/lib.rs` 已同步改为 `strength.clamp(0.0, 2.0)`，具备 NDK 后应执行 `scripts/build-native.sh` 重新生成 `.so`，然后删除补丁库并重新跑测试/构建。
-
-这是交付库与源码之间的已知差异；在补丁库上尚未做真机强度对比测试。
-
-### 7.4 模型
-
-模型不随仓库提交，首次启动从 Adobe 官方 CDN 下载并校验：
+模型不默认打包进 APK。运行时 `ModelRepository` 从以下地址下载并做大小、SHA-256 校验：
 
 ```text
 https://cai-watermark.adobe.net/watermarking/trustmark-models
@@ -607,81 +343,110 @@ https://cai-watermark.adobe.net/watermarking/trustmark-models
 | `encoder_Q.onnx` | 17,312,208 | `19b3d1b25836130ffd78775a8f61539f993375d1823ef0e59ba5b8dffb4f892d` |
 | `decoder_Q.onnx` | 47,401,222 | `ee3268f057c9dabef680e169302f5973d0589feea86189ed229a896cc3aa88df` |
 
-离线打包：
+下载完成后保存在应用私有目录 `filesDir/models`。也可以把模型放到 `app/src/main/assets/models/` 作为离线兜底，或预下载：
 
 ```bash
 python scripts/fetch-models.py --to-assets
 ./gradlew :app:assembleDebug
 ```
 
-应用私有模型目录仍为 `filesDir/models`。
+首次启动时会校验哈希；校验失败会重新下载。
 
 ---
 
-## 8. 验收场景
+## 9. 权限与存储
 
-### 8.1 Payload
+| 权限 / 能力 | 用途 |
+|---|---|
+| `INTERNET`、`ACCESS_NETWORK_STATE` | 下载 Q 模型 |
+| `READ_MEDIA_IMAGES`（API 33+ 声明） | 兼容旧版选择器；主流程使用 Photo Picker |
+| `READ_EXTERNAL_STORAGE`（maxSdk 32） | Android 12 及以下的相册读取兜底 |
+| `WRITE_EXTERNAL_STORAGE`（maxSdk 28） | Android 8/9 旧版保存兜底 |
+| `POST_NOTIFICATIONS`（API 33+） | 前台任务进度通知 |
+| `FOREGROUND_SERVICE` + `FOREGROUND_SERVICE_DATA_SYNC` | WorkManager 前台执行 |
 
-- 通用模式：`ACME` + BCH Super → 26 位，剩余 14 位。
-- 通用模式：11 个大写字母 + BCH_5 → 61 位，剩余 0。
-- 通用模式：12 个大写字母 + BCH_5 → 必须拒绝。
-- 通用模式：6 位字母表文本 + BCH Super → 正确计算上限。
-- 批次模式：4 字母短码 + 编号 1 + CRC-7 → 恰好 40 位。
-- 批次模式：编号 0、编号 4096、短码含数字、CRC 被篡改 → 全部拒绝。
-- 解码第 0 位分流正确；批次帧 CRC 失败返回“解码失败”。
-- v1.1 旧帧不再被误判为有效批次帧。
+存储位置：
 
-### 8.2 生成
-
-- 通用模式：选择 2 张图，只生成 2 个文件，不带编号。
-- 批次模式：批次含 3 个接收人，1 张源图生成 3 个文件，编号 1/2/3。
-- 批次模式输出使用 `BCH_SUPER`；强度默认 `1.3`，可改为 `1.5`、`1.8` 等值；Kotlin 任务模型会把该值传给 JNI，预编译库的 clamp 已放宽到 2.0（真机对比未执行）。
-- 每份输出都从原图重新读取，未复用已编码 Bitmap。
-- 输出命名 `原文件名_tm.ext`，同名追加 `_tm_2`。
-- 超容量/超 4095/CRC 构建失败时整批阻止，并显示具体原因。
-
-### 8.3 UI
-
-- 主界面顶部无大标题，Tab 栏上移，只有“生成”“解密”两个 Tab。
-- 通用模式不出现份数、映射表、编号位宽。
-- 批次模式不出现固定文本、BCH 下拉、份数，但出现可调强度。
-- 容量区为进度条 + “已用 X 位 / 剩余 Y 位” + “查看详情”。
-- BottomSheet 能展示帧头和二进制预览。
-- 解密列表为 ListItem；通用解密成功绿色、批次命中绿色、批次无匹配黄色、失败红色。
-- 解密页可对同一批图片自动区分通用帧与批次帧，无需用户选择解密模式。
-- 不再有“溯源查询”Tab，也不再有“手动选择批次”兜底。
-
-### 8.4 回归
-
-- 批量解密、CSV/JSON 导出仍可用。
-- 模型预下载、SHA 校验仍可用。
-- 双 ABI APK 均可安装。
-- 进度条完成/取消/失败状态不回归。
-- `applicationId` 未变化，可覆盖安装 v1.1.0；`versionCode = 3`。
+- 输出图片：MediaStore `Pictures/TrustMarkTool/`（API 29+）；Android 8/9 写入公共 Pictures 目录
+- 模型：`filesDir/models`
+- 批次映射：`filesDir/batch_store.enc`
+- 解密结果：`filesDir/decode_results.json`
+- 任务清单：`filesDir/task_plans/*.json`
 
 ---
 
-## 9. 已知限制
+## 10. 测试与验收
 
-1. **CRC-7 变体**：已采用 CRC-7/MMC（poly `0x09`，init `0x00`，末尾补 7 个零的标准形式，`123456789` 校验值 `0x75`）；与 v1.1 帧不兼容。
-2. **旧水印不兼容**：v1.2 不保证解码 v1.1 图片；旧批次短码也不能直接用于新批次帧。
-3. **可调强度与 native clamp**：源码已改为 `0.0..2.0`，但当前 `.so` 是二进制补丁版本（见 7.3）；未在真机上验证 >1.0 的实际嵌入强度与解码鲁棒性。
-4. **12 位编号的“全局唯一”**：按“批次短码 + 编号”组合唯一实现；单批次最多 4095 条。
-5. **文件名变更**：v1.2 恢复 `_tm` / `_tm_2` 命名，v1.1 的 `_tm_b..._n...` 停用；这会影响依赖文件名解析的旧流程。
-6. **未做真机验证**：JNI、ONNX Runtime、模型推理、MediaStore 读写仍需物理设备验收。
-7. **release 构建**：本轮只验证 debug；release 签名与混淆需另行执行。
-8. **预编译库与源码差异**：`libtrustmark_jni.so` 是打过补丁的预编译库，`native/src/lib.rs` 是修正后的源码；在具备 NDK/Rust 的环境应重建 `.so` 以消除差异。
-9. **旧批次迁移**：v1.1 的 `B`/`G` 三字符批次不会出现在 v1.2 批次选择器中（数据仍保留在加密存储和全量导出里）；如需继续使用旧映射，请先导出备份，再新建 4 字母批次。
+### 10.1 单元测试
+
+```bash
+./gradlew :app:testDebugUnitTest
+```
+
+当前 17 个测试，覆盖：
+
+- 通用帧字母 / 字母数字往返
+- 容量边界与超长拒绝
+- 文本过滤与大写化
+- 批次帧 4 字母短码 + 12 位编号
+- CRC-7 校验值 `0x75` 与批次向量 `0x46`
+- 非法批次码、编号 0 / 4096、非 BCH Super 拒绝
+- v1.1 旧帧拒绝
+- `_tm` / `_tm_2` 命名与中文文件名
+- BCH 菜单顺序与文案
+
+### 10.2 手工验收
+
+**通用模式**
+
+- 选 2 张图，生成 2 个文件，文件名带 `_tm`。
+- 文本 `ACME` + BCH Super 可生成；12 个大写字母 + BCH 5 应被拒绝。
+- 解码输出文本与输入一致。
+
+**批次模式**
+
+- 新建批次，填 3 个接收人；选 1 张图生成 3 个文件，编号 1/2/3。
+- 逐张解密，命中对应接收人；黄色 / 红色状态不应误报为绿色。
+- 同一张图生成两份时，第二份输出带 `_tm_2`。
+
+**PNG**
+
+- 带透明通道 PNG：生成成功，输出保留 alpha。
+- 不带透明通道 PNG：生成成功。
+- PNG + JPEG 混合批次：全部成功。
+- 人为制造单张失败：其余继续，进度卡片列出失败文件与原因。
+
+**进度 / 取消**
+
+- 运行中显示转圈、当前文件、进度和取消按钮。
+- 完成后不显示转圈或“正在处理中”，按钮恢复。
+- 取消后显示“已取消”，通知消失，已完成文件保留。
+
+**持久化**
+
+- 修改固定文本 / 批次后杀掉进程再启动，生成页恢复上次值。
 
 ---
 
-## 10. 相关文档
+## 11. 已知限制
 
-- [CHANGELOG.md](CHANGELOG.md)
-- [docs/PAYLOAD_FORMAT.md](docs/PAYLOAD_FORMAT.md)
-- [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)
-- [Adobe TrustMark](https://github.com/adobe/trustmark)
+1. **无真机验收**：JNI、ONNX Runtime、模型推理、MediaStore 读写、PNG 透明通道均未在物理设备上跑过完整流程。
+2. **release 签名未验证**：仓库 APK 为 debug 签名；正式分发需自备 keystore。
+3. **批次导出为全量**：一次导出所有批次，不是只导出选中批次。
+4. **映射表仅本机**：卸载、清数据或换机后丢失；必须定期导出 CSV/JSON。
+5. **编号上限 4095**：批次帧只有 12 位编号。
+6. **文本字符集受限**：不支持中文、emoji；仅 `A–Z`、`0–9`、空格、`- _ .`。中文文件名可以保留，但 payload 文本不行。
+7. **旧帧不兼容**：v1.1 TMK2 图片无法按 v1.2 解码；v1.2 也不生成旧帧。
+8. **模型首次下载**：约 62 MB，依赖网络；CDN 不可达时只能使用 assets 兜底。
+9. **嵌入强度**：批次模式可调 0.50–2.00；通用模式固定 1.0。强度与画质、抗压缩性的平衡尚未做设备侧系统评测。
 
 ---
 
-**交付状态：v1.2.0 代码、单元测试、lint 与 debug APK 已完成；尚未做物理设备运行验收。**
+## 12. 文档
+
+- [`docs/PAYLOAD_FORMAT.md`](docs/PAYLOAD_FORMAT.md)：payload 位布局、CRC、容量表、示例
+- [`CHANGELOG.md`](CHANGELOG.md)：版本变更
+- [`dist/README.txt`](dist/README.txt)：APK 交付说明
+- [`dist/SHA256SUMS.txt`](dist/SHA256SUMS.txt)：APK 校验值
+
+上游项目：[adobe/trustmark](https://github.com/adobe/trustmark)
