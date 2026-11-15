@@ -58,6 +58,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 text = savedGenerate.text,
                 mode = savedGenerate.mode,
                 selectedBatchId = savedGenerate.batchId,
+                // Shared strength restored for both modes (v1.2.2+).
+                strength = savedGenerate.strength,
                 ecc = if (savedGenerate.mode == GenerateMode.BATCH) {
                     EccLevel.BCH_SUPER
                 } else {
@@ -163,9 +165,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    /** Batch-only strength: 0.50–2.00, snapped to 0.05. */
+    /** Embedding strength for BOTH modes: 0.50–2.00, snapped to 0.05. */
     fun setStrength(value: Float) {
         val snapped = ((value.coerceIn(MIN_STRENGTH, MAX_STRENGTH) * 20f).roundToInt() / 20f)
+        generatePreferences.saveStrength(snapped)
         _uiState.update { it.copy(generate = it.generate.copy(strength = snapped)) }
     }
 
@@ -219,7 +222,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             _uiState.update { it.copy(message = textPlan.error ?: "文本无法编码") }
             return
         }
-        if (mode == GenerateMode.BATCH && generate.strength !in MIN_STRENGTH..MAX_STRENGTH) {
+        // v1.2.2: strength is adjustable in universal mode too, so the range
+        // check now applies to both modes.
+        if (generate.strength !in MIN_STRENGTH..MAX_STRENGTH) {
             _uiState.update { it.copy(message = "强度必须在 0.50–2.00 之间") }
             return
         }
@@ -246,7 +251,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                                 outputStem = stem,
                                 outputFileName = "$stem.$extension",
                                 eccWireName = generate.ecc.wireName,
-                                strength = 1.0f,
+                                // v1.2.2: universal tasks use the shared
+                                // adjustable strength instead of a fixed 1.0.
+                                strength = generate.strength,
                             )
                         }
                     } else {

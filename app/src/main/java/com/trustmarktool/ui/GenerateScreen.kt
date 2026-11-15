@@ -131,6 +131,8 @@ fun GenerateScreen(
                 enabled = !running,
                 onTextChange = viewModel::setGenerateText,
                 onEccChange = viewModel::setEcc,
+                // v1.2.2: universal mode shares the adjustable strength slider.
+                onStrengthChange = viewModel::setStrength,
                 onDetails = { showDetails = true },
             )
         } else {
@@ -291,6 +293,7 @@ private fun UniversalConfigCard(
     enabled: Boolean,
     onTextChange: (String) -> Unit,
     onEccChange: (EccLevel) -> Unit,
+    onStrengthChange: (Float) -> Unit,
     onDetails: () -> Unit,
 ) {
     Card {
@@ -325,6 +328,13 @@ private fun UniversalConfigCard(
                 optionSubtitle = { it.description },
                 enabled = enabled,
                 onSelect = onEccChange,
+            )
+
+            // v1.2.2: strength is adjustable in universal mode too.
+            StrengthSlider(
+                value = state.strength,
+                enabled = enabled,
+                onValueChange = onStrengthChange,
             )
 
             if (plan != null) {
@@ -419,26 +429,12 @@ private fun BatchConfigCard(
                 )
             }
 
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Text("嵌入强度", style = MaterialTheme.typography.labelLarge)
-                Spacer(Modifier.weight(1f))
-                Text(
-                    String.format(Locale.US, "%.2f", state.strength),
-                    style = MaterialTheme.typography.labelLarge,
-                    fontFamily = FontFamily.Monospace,
-                )
-            }
-            Slider(
+            // v1.2.2: same shared slider as universal mode; one strength value
+            // is persisted across both modes.
+            StrengthSlider(
                 value = state.strength,
-                onValueChange = onStrengthChange,
-                valueRange = MainViewModel.MIN_STRENGTH..MainViewModel.MAX_STRENGTH,
-                steps = 29,
                 enabled = enabled,
-            )
-            Text(
-                "0.50–2.00，步长 0.05。越高越抗压缩，但原图失真越明显；默认 1.30。",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                onValueChange = onStrengthChange,
             )
 
             AssistChip(onClick = {}, label = { Text("BCH Super · 固定 40 位") })
@@ -456,6 +452,41 @@ private fun BatchConfigCard(
     }
 }
 
+/**
+ * v1.2.2: shared embedding-strength slider for BOTH universal and batch modes.
+ * One value is persisted in GeneratePreferences and applied to every task.
+ */
+@Composable
+private fun StrengthSlider(
+    value: Float,
+    enabled: Boolean,
+    onValueChange: (Float) -> Unit,
+) {
+    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text("嵌入强度", style = MaterialTheme.typography.labelLarge)
+            Spacer(Modifier.weight(1f))
+            Text(
+                String.format(Locale.US, "%.2f", value),
+                style = MaterialTheme.typography.labelLarge,
+                fontFamily = FontFamily.Monospace,
+            )
+        }
+        Slider(
+            value = value,
+            onValueChange = onValueChange,
+            valueRange = MainViewModel.MIN_STRENGTH..MainViewModel.MAX_STRENGTH,
+            steps = 29,
+            enabled = enabled,
+        )
+        Text(
+            "0.50–2.00，步长 0.05。越高越抗压缩，但原图失真越明显；默认 1.30。",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+    }
+}
+
 @Composable
 private fun CapacityBar(
     used: Int,
@@ -463,8 +494,7 @@ private fun CapacityBar(
     textMode: PayloadCodec.TextMode?,
     remaining: Int,
     onDetails: () -> Unit,
-) {
-    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+) {    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
         LinearProgressIndicator(
             progress = { if (capacity <= 0) 0f else (used.toFloat() / capacity).coerceIn(0f, 1f) },
             modifier = Modifier

@@ -4,7 +4,7 @@
 
 - **应用名**：隐迹
 - **包名**：`com.trustmarktool`（debug 为 `com.trustmarktool.debug`）
-- **当前版本**：1.2.1（versionCode 4）
+- **当前版本**：1.2.2（versionCode 5）
 - **模型**：TrustMark **Q**，编码器 + 解码器
 - **ABI**：`arm64-v8a`、`x86_64`
 - **最低系统**：Android 8.0（API 26）
@@ -33,11 +33,11 @@
 仓库中的 debug APK：
 
 ```text
-dist/TrustMarkTool-1.2.1-debug.apk
+dist/TrustMarkTool-1.2.2-debug.apk
 ```
 
-- 大小：`38,707,624` bytes
-- SHA-256：`d9ae088b9adb7e77dd87576dda8738ae4c195f2d09d2c04eed21d489748fb773`
+- 大小：`36,952,274` bytes
+- SHA-256：`E32AB9CADA1B5485A45991CE2081BB5117A9319C104F087A3FFE4980FD74C428`
 - 签名：debug keystore，APK Signature Scheme v2
 - 首次启动会从 Adobe 官方 CDN 下载 Q 模型（约 62 MB），需联网；下载完成后可离线使用。
 
@@ -53,8 +53,9 @@ dist/TrustMarkTool-1.2.1-debug.apk
 2. 从相册选择一张或多张 JPEG / PNG。
 3. 输入固定文本。仅支持 `A–Z`、`0–9`、空格、`-`、`_`、`.`，自动转大写，最长 15 字符。
 4. 选择 BCH 等级。默认 **BCH 5**；文本较长时改用 BCH 3 / 4，文本较短且希望更强纠错时用 **BCH Super**。
-5. 查看容量条：`已用 X 位 / 剩余 Y 位`，点“查看详情”可看帧头和二进制预览。
-6. 开始生成。每张源图生成 **1 个** 输出文件。
+5. 调整嵌入强度。默认 `1.30`，范围 `0.50–2.00`，步长 `0.05`；与批次模式共用同一个值。
+6. 查看容量条：`已用 X 位 / 剩余 Y 位`，点“查看详情”可看帧头和二进制预览。
+7. 开始生成。每张源图生成 **1 个** 输出文件。
 
 示例：`ACME` + BCH Super = `6 + 4×5 = 26` 位，容量 40 位，剩余 14 位。
 
@@ -63,7 +64,7 @@ dist/TrustMarkTool-1.2.1-debug.apk
 1. 先在 **生成 → 批次与映射** 中新建批次，填写接收人列表（编号 1、2、3……）。
 2. 回到生成页，模式选择 **批次**。
 3. 选择源图，再选择批次。每张源图会按该批次的全部映射条目各生成一份。
-4. 调整嵌入强度。默认 `1.30`，范围 `0.50–2.00`，步长 `0.05`。强度越高越抗压缩，但原图视觉扰动也越明显。
+4. 调整嵌入强度。默认 `1.30`，范围 `0.50–2.00`，步长 `0.05`。强度越高越抗压缩，但原图视觉扰动也越明显；与通用模式共用同一个值。
 5. 开始生成。批次模式固定使用 **BCH Super**。
 
 示例：1 张源图 + 3 个接收人 → 3 个输出文件，编号分别为 1、2、3。2 张源图 + 3 个接收人 → 6 个输出文件，每张源图都从编号 1 开始。
@@ -160,7 +161,6 @@ v1.2 的帧格式与 v1.1 的 TMK2 帧不兼容。v1.1 生成的图片不能按 
 | `Batch` | 4 字母短码、批次名、创建时间、模型变体 Q、BCH 等级、备注 |
 | `MappingEntry` | 批次 ID、编号 1..4095、接收人、备注 |
 | `OutputRecord` | 批次 ID、源图标识、编号、输出文件名、创建时间 |
-
 存储位置：
 
 ```text
@@ -200,6 +200,7 @@ file_name,frame_type,decoded_text,batch_id,serial,batch_name,recipient,ecc,confi
 - 固定文本
 - 当前生成模式（通用 / 批次）
 - 当前批次 ID
+- 嵌入强度（通用 / 批次共用一个值）
 
 批次列表和映射表本身不放在 SharedPreferences 中，而由加密的 `BatchStore` 管理。
 
@@ -301,7 +302,7 @@ app/build/outputs/apk/debug/app-debug.apk
 
 - 单元测试 17/17 通过
 - `lintDebug`：0 errors / 8 warnings
-- APK：versionCode 4，versionName `1.2.1-debug`，label `隐迹`
+- APK：versionCode 5，versionName `1.2.2-debug`，label `隐迹`
 - v2 签名，包含 `arm64-v8a` 与 `x86_64` 的 `libtrustmark_jni.so`、`libonnxruntime.so`
 
 ### 8.3 重新编译 native
@@ -424,7 +425,8 @@ python scripts/fetch-models.py --to-assets
 
 **持久化**
 
-- 修改固定文本 / 批次后杀掉进程再启动，生成页恢复上次值。
+- 修改固定文本 / 批次 / 强度后杀掉进程再启动，生成页恢复上次值。
+- 通用模式下强度滑条可见且可调；生成的输出与批次模式使用同一强度值。
 
 ---
 
@@ -438,7 +440,7 @@ python scripts/fetch-models.py --to-assets
 6. **文本字符集受限**：不支持中文、emoji；仅 `A–Z`、`0–9`、空格、`- _ .`。中文文件名可以保留，但 payload 文本不行。
 7. **旧帧不兼容**：v1.1 TMK2 图片无法按 v1.2 解码；v1.2 也不生成旧帧。
 8. **模型首次下载**：约 62 MB，依赖网络；CDN 不可达时只能使用 assets 兜底。
-9. **嵌入强度**：批次模式可调 0.50–2.00；通用模式固定 1.0。强度与画质、抗压缩性的平衡尚未做设备侧系统评测。
+9. **嵌入强度**：通用与批次模式均可在 0.50–2.00 调节（共用一个值）。强度与画质、抗压缩性的平衡尚未做设备侧系统评测。
 
 ---
 

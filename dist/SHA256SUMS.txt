@@ -1,3 +1,4 @@
+e32ab9cada1b5485a45991ce2081bb5117a9319c104f087a3ffe4980fd74c428  TrustMarkTool-1.2.2-debug.apk
 d9ae088b9adb7e77dd87576dda8738ae4c195f2d09d2c04eed21d489748fb773  TrustMarkTool-1.2.1-debug.apk
 3a84e1901cf4f295952e6156c3c814b487d3afc08aeb7768735e9b27625f3439  TrustMarkTool-1.2.0-debug.apk
 fb570721a55f5be9c78ea334ed670851db9e52f14a33927acf1579b2bef630c2  TrustMarkTool-1.1.0-debug.apk

@@ -84,7 +84,7 @@ data class GenerateUiState(
     val mode: GenerateMode = GenerateMode.UNIVERSAL,
     val text: String = "ACME",
     val ecc: EccLevel = EccLevel.BCH_5,
-    /** Batch-only indestructible strength; range 0.50–2.00, default 1.30. */
+    /** Embedding strength used by BOTH universal and batch tasks; 0.50–2.00, default 1.30. */
     val strength: Float = 1.3f,
     val selectedBatchId: String? = null,
     val task: TaskProgress? = null,

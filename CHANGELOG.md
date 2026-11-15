@@ -2,6 +2,25 @@
 
 本项目遵循 [Semantic Versioning](https://semver.org/lang/zh-CN/)；版本号与 `app/build.gradle.kts` 的 `versionName` 保持一致。
 
+## v1.2.2 — 2026-11-15
+
+v1.2.2 让通用模式也支持嵌入强度调节，payload 帧结构、包名和部署层不变。
+
+### 新增
+
+- **通用模式嵌入强度调节**：通用模式与批次模式共用同一个强度值（0.50–2.00，步长 0.05，默认 1.30），滑条提取为 `StrengthSlider` 共用组件；强度写入 `SharedPreferences`，重启恢复。
+- 通用任务的 strength 不再固定为 1.0，而是随 UI 值传给 JNI；native clamp 仍为 0.0–2.0，无需重建 `.so`。
+- 应用版本：`versionCode 5`、`versionName 1.2.2`。
+
+### 验证
+
+- `:app:testDebugUnitTest`：17/17 通过。
+- `:app:lintDebug`：0 error / 8 warning。
+- Debug APK：`dist/TrustMarkTool-1.2.2-debug.apk`，36,952,274 bytes，v2 签名。
+- SHA-256：`e32ab9cada1b5485a45991ce2081bb5117a9319c104f087a3ffe4980fd74c428`。
+- 打包的 `libtrustmark_jni.so` 与 v1.2.1 相同（arm64 `9e70ed8a…`，x86_64 `93860ec5…`）。
+- **未在物理设备上验证 JNI、ONNX Runtime、模型推理与 MediaStore 读写。**
+
 ## v1.2.1 — 2026-11-08
 
 v1.2.1 是 v1.2.0 的兼容性修复与交互完善版本，payload 帧结构、包名和部署层不变。

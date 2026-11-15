@@ -19,6 +19,7 @@ class GeneratePreferences(context: Context) {
         val text: String,
         val batchId: String?,
         val mode: GenerateMode,
+        val strength: Float,
     )
 
     fun load(): Snapshot {
@@ -32,7 +33,11 @@ class GeneratePreferences(context: Context) {
             GenerateMode.BATCH.name -> GenerateMode.BATCH
             else -> GenerateMode.UNIVERSAL
         }
-        return Snapshot(text = text, batchId = batchId, mode = mode)
+        // Strength applies to both generate modes since v1.2.2; values written
+        // by older versions are absent and fall back to the shared default.
+        val strength = prefs.getFloat(KEY_STRENGTH, DEFAULT_STRENGTH)
+            .coerceIn(MIN_STRENGTH, MAX_STRENGTH)
+        return Snapshot(text = text, batchId = batchId, mode = mode, strength = strength)
     }
 
     fun saveText(value: String) {
@@ -49,11 +54,19 @@ class GeneratePreferences(context: Context) {
         prefs.edit().putString(KEY_MODE, mode.name).apply()
     }
 
+    fun saveStrength(value: Float) {
+        prefs.edit().putFloat(KEY_STRENGTH, value).apply()
+    }
+
     private companion object {
         const val FILE_NAME = "generate_preferences"
         const val KEY_TEXT = "fixed_text"
         const val KEY_BATCH_ID = "selected_batch_id"
         const val KEY_MODE = "generate_mode"
+        const val KEY_STRENGTH = "embed_strength"
         const val DEFAULT_TEXT = "ACME"
+        const val DEFAULT_STRENGTH = 1.3f
+        const val MIN_STRENGTH = 0.5f
+        const val MAX_STRENGTH = 2.0f
     }
 }
