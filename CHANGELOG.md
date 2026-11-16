@@ -18,6 +18,7 @@ v1.2.2 让通用模式也支持嵌入强度调节，payload 帧结构、包名�
 - `:app:lintDebug`：0 error / 8 warning。
 - Debug APK：`dist/TrustMarkTool-1.2.2-debug.apk`，36,952,274 bytes，v2 签名。
 - SHA-256：`e32ab9cada1b5485a45991ce2081bb5117a9319c104f087a3ffe4980fd74c428`。
+- Release APK（真机验收后追加）：`dist/TrustMarkTool-1.2.2-release.apk`，29,176,504 bytes，正式密钥 v2 签名（`CN=TrustMarkTool`），包名 `com.trustmarktool`；SHA-256 `d00ed802dd74d174fce9dbe1559581bb8da306cdc8144690ef7db0524128e371`。
 - 打包的 `libtrustmark_jni.so` 与 v1.2.1 相同（arm64 `9e70ed8a…`，x86_64 `93860ec5…`）。
 - **未在物理设备上验证 JNI、ONNX Runtime、模型推理与 MediaStore 读写。**
 

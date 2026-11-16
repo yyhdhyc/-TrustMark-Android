@@ -1,18 +1,26 @@
-TrustMarkTool 1.2.2 debug APK
-=============================
+TrustMarkTool 1.2.2 APK
+=======================
 
-Current file:
+Release build (recommended):
+  TrustMarkTool-1.2.2-release.apk
+  Package: com.trustmarktool
+  Version: 1.2.2 (versionCode 5)
+  Size: 29,176,504 bytes
+  SHA-256: D00ED802DD74D174FCE9DBE1559581BB8DA306CDC8144690EF7DB0524128E371
+  Signature: release key (v2), CN=TrustMarkTool. Min Android: 8.0 (API 26).
+  ABIs: arm64-v8a, x86_64
+
+Debug build:
   TrustMarkTool-1.2.2-debug.apk
   Package: com.trustmarktool.debug
   Version: 1.2.2 (versionCode 5)
   Size: 36,952,274 bytes
-  SHA-256: e32ab9cada1b5485a45991ce2081bb5117a9319c104f087a3ffe4980fd74c428
-  Min Android: 8.0 (API 26)
-  ABIs: arm64-v8a, x86_64
+  SHA-256: E32AB9CADA1B5485A45991CE2081BB5117A9319C104F087A3FFE4980FD74C428
   Signature: Android debug certificate (v2). Installable, NOT for production.
 
 Install:
-  adb install -r TrustMarkTool-1.2.2-debug.apk
+  adb install -r TrustMarkTool-1.2.2-release.apk
+  (release 和 debug 包名不同，可共存；卸载任一不影响另一个)
 
 First run:
   The APK does NOT contain the ONNX models. The first encode/decode downloads

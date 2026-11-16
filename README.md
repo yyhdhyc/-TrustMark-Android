@@ -32,16 +32,31 @@
 
 仓库中的 debug APK：
 
+**正式版（推荐）**
+
+```text
+dist/TrustMarkTool-1.2.2-release.apk
+```
+
+- 包名 `com.trustmarktool`（正式签名，v2 scheme，证书 `CN=TrustMarkTool`）
+- versionCode `5`，versionName `1.2.2`
+- 大小：`29,176,504` bytes
+- SHA-256：`D00ED802DD74D174FCE9DBE1559581BB8DA306CDC8144690EF7DB0524128E371`
+
+**调试版**
+
 ```text
 dist/TrustMarkTool-1.2.2-debug.apk
 ```
 
+- 包名 `com.trustmarktool.debug`（debug 证书）
 - 大小：`36,952,274` bytes
 - SHA-256：`E32AB9CADA1B5485A45991CE2081BB5117A9319C104F087A3FFE4980FD74C428`
+- 两个包名不同，可在同一设备共存。
 - 签名：debug keystore，APK Signature Scheme v2
 - 首次启动会从 Adobe 官方 CDN 下载 Q 模型（约 62 MB），需联网；下载完成后可离线使用。
 
-> debug 包名带 `.debug`，与 release 包可以并存。正式分发前应使用自己的 release keystore 重新签名。
+> debug 包名带 `.debug`，与 release 包可以并存。正式分发请使用 release 版 APK；签名密钥 `keystore/trustmarktool-release.jks` 与密码（`keystore.properties`）保存在本地、不入库，**请务必备份**——密钥丢失后无法对正式包进行升级签名。
 
 ---
 
@@ -433,7 +448,7 @@ python scripts/fetch-models.py --to-assets
 ## 11. 已知限制
 
 1. **无真机验收**：JNI、ONNX Runtime、模型推理、MediaStore 读写、PNG 透明通道均未在物理设备上跑过完整流程。
-2. **release 签名未验证**：仓库 APK 为 debug 签名；正式分发需自备 keystore。
+2. **正式签名密钥不入库**：`keystore/` 与 `keystore.properties` 被 `.gitignore` 排除，仅存在于本机，丢失后需重新生成密钥（旧正式包将无法覆盖升级）。
 3. **批次导出为全量**：一次导出所有批次，不是只导出选中批次。
 4. **映射表仅本机**：卸载、清数据或换机后丢失；必须定期导出 CSV/JSON。
 5. **编号上限 4095**：批次帧只有 12 位编号。
